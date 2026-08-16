@@ -1,0 +1,33 @@
+{
+  "poll": {
+    "base": 10,
+    "max": 3600,
+    "settle": 10
+  },
+  "models": {
+    "org/example-model": {
+      "watch": true,
+      "watchPreset": "full-context",
+      "presets": {
+        "full-context": {
+          "gpu": {
+            "ratio": 1.0
+          },
+          "offloadKVCacheToGpu": true,
+          "contextLength": 65536,
+          "flashAttention": true,
+          "llamaKCacheQuantizationType": "q8_0",
+          "llamaVCacheQuantizationType": "q8_0"
+        }
+      }
+    }
+  },
+  "opencode": {
+    "models": {
+      "org/example-model": {
+        "output": 32768,
+        "reasoning": true
+      }
+    }
+  }
+}

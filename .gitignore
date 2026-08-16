@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# uv
+.venv/
+
+# Runtime artifacts
+dynamic_loader.log
+
+# Local config (personal model presets); use model_configs.example.json instead
+loader/model_configs.json
+
+# IDE
+.idea/
+.vscode/
+
+# Windows shortcuts
+*.lnk
