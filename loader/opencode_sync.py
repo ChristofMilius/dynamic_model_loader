@@ -1,0 +1,207 @@
+"""Sync loader presets into the opencode config's LM Studio provider models.
+
+The opencode global config (``~/.config/opencode/opencode.jsonc``) declares the
+LM Studio providers' model lists with only a ``name``. This module edits those
+entries in place — preserving JSONC comments and formatting — so opencode knows
+each model's context window and reasoning capability.
+
+Only models already present in the config are updated; missing ones are
+reported, not added.
+"""
+
+import json
+import os
+
+DEFAULT_CONFIG_PATH = os.path.expanduser("~/.config/opencode/opencode.jsonc")
+PROVIDERS = ["lmstudio_local_network", "lmstudio_localhost"]
+
+_UNESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
+
+
+def _scan_strings(text, start, end):
+    """Yield ``(token_start, token_end, value)`` for string literals.
+
+    Whitespace and ``//`` / ``/* */`` comments are skipped.
+    """
+    i = start
+    n = min(end, len(text))
+    while i < n:
+        c = text[i]
+        if c == "/" and i + 1 < n and text[i + 1] in "/*":
+            if text[i + 1] == "/":
+                j = text.find("\n", i)
+                i = len(text) if j < 0 else j + 1
+                continue
+            j = text.find("*/", i + 2)
+            i = len(text) if j < 0 else j + 2
+            continue
+        if c == '"':
+            j = i + 1
+            buf = []
+            while j < n:
+                ch = text[j]
+                if ch == "\\" and j + 1 < n:
+                    buf.append(_UNESCAPES.get(text[j + 1], text[j + 1]))
+                    j += 2
+                    continue
+                if ch == '"':
+                    yield (i, j + 1, "".join(buf))
+                    i = j + 1
+                    break
+                buf.append(ch)
+                j += 1
+            continue
+        i += 1
+
+
+def _skip_ws(text, i):
+    while i < len(text) and text[i] in " \t\r\n":
+        i += 1
+    return i
+
+
+def _match_brace(text, open_idx):
+    """Return the index just past the closer matching the ``{``/``[`` at open_idx."""
+    depth = 0
+    i = open_idx
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            for ts, te, _ in _scan_strings(text, i, n):
+                if ts == i:
+                    i = te
+                    break
+            else:
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] in "/*":
+            if text[i + 1] == "/":
+                j = text.find("\n", i)
+                i = len(text) if j < 0 else j + 1
+                continue
+            j = text.find("*/", i + 2)
+            i = len(text) if j < 0 else j + 2
+            continue
+        if c in "{[":
+            depth += 1
+        elif c in "}]":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def _find_key(text, key, start, end):
+    """Return the index of the ``:`` after a string token equal to ``key``, or None."""
+    for ts, te, val in _scan_strings(text, start, end):
+        if val == key:
+            j = _skip_ws(text, te)
+            if j < end and text[j] == ":":
+                return j
+    return None
+
+
+def _value_span(text, colon_idx):
+    """Return ``(start, end)`` of the value after a ``:``, only for object values."""
+    j = _skip_ws(text, colon_idx + 1)
+    if j < len(text) and text[j] == "{":
+        return j, _match_brace(text, j)
+    return None, None
+
+
+def _existing_name(text, vstart, vend):
+    try:
+        obj = json.loads(text[vstart:vend])
+    except Exception:
+        return None
+    name = obj.get("name")
+    return name if isinstance(name, str) and name else None
+
+
+def _render(entry, key_indent):
+    body = json.dumps(entry, indent=2).splitlines()
+    pad = " " * (key_indent + 2)
+    lines = ["{"]
+    for line in body[1:-1]:
+        lines.append(pad + line)
+    lines.append(" " * key_indent + "}")
+    return "\n".join(lines)
+
+
+def _build_entry(name, context, reasoning, output):
+    entry = {"name": name}
+    if reasoning:
+        entry["reasoning"] = True
+    if context:
+        limit = {"context": context, "input": context}
+        limit["output"] = output or max(1024, context // 4)
+        entry["limit"] = limit
+    return entry
+
+
+def sync(config_path, watched_desired, overrides=None, providers=None):
+    """Update model entries in the opencode config.
+
+    ``watched_desired``: ``{model_key: desired_load_config}`` (the loader's
+    watched presets). ``overrides``: ``{model_key: {"reasoning": bool,
+    "output": int}}`` from the config's optional ``opencode`` section.
+
+    Returns ``(changed, missing)`` where ``missing`` lists model keys not found
+    in the config's provider model lists.
+    """
+    overrides = overrides or {}
+    providers = providers or PROVIDERS
+    with open(config_path, "r", encoding="utf-8") as fh:
+        text = fh.read()
+
+    edits = []
+    missing = []
+    for provider in providers:
+        root = _find_key(text, "provider", 0, len(text))
+        if root is None:
+            continue
+        pstart, pend = _value_span(text, root)
+        if pstart is None:
+            continue
+        pkey = _find_key(text, provider, pstart, pend)
+        if pkey is None:
+            continue
+        pobj_start, pobj_end = _value_span(text, pkey)
+        if pobj_start is None:
+            continue
+        mkey = _find_key(text, "models", pobj_start, pobj_end)
+        if mkey is None:
+            continue
+        mobj_start, mobj_end = _value_span(text, mkey)
+        if mobj_start is None:
+            continue
+        for model_key, desired in watched_desired.items():
+            mk = _find_key(text, model_key, mobj_start, mobj_end)
+            if mk is None:
+                missing.append((provider, model_key))
+                continue
+            vstart, vend = _value_span(text, mk)
+            if vstart is None or text[vstart] != "{":
+                missing.append((provider, model_key))
+                continue
+            context = desired.get("contextLength") or desired.get("context_length")
+            ov = overrides.get(model_key) or {}
+            reasoning = ov.get("reasoning")
+            if reasoning is None:
+                reasoning = "reasoning" in model_key
+            name = _existing_name(text, vstart, vend) or model_key.rsplit("/", 1)[-1]
+            entry = _build_entry(name, context, bool(reasoning), ov.get("output"))
+            key_line_start = text.rfind("\n", 0, mk) + 1
+            key_indent = len(text[key_line_start:mk]) - len(text[key_line_start:mk].lstrip(" "))
+            rep = _render(entry, key_indent)
+            if text[vstart:vend] == rep:
+                continue
+            edits.append((vstart, vend, rep))
+
+    for vstart, vend, rep in sorted(edits, reverse=True):
+        text = text[:vstart] + rep + text[vend:]
+    with open(config_path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return len(edits), missing
