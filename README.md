@@ -22,8 +22,8 @@ the watcher module (`watcher.py`), which runs as a background daemon thread.
 
 | File | Role |
 |---|---|
-| `loader/dynamic_model_loader.py` | The app: OOP terminal REPL. Commands are dispatched through a command dictionary. |
-| `loader/watcher.py` | `Watcher` OOP: background daemon thread (scan / settle / fix / backoff). No stdout; state read via `status()`. |
+| `loader/dynamic_model_loader.py` | The app: interactive CLI. Commands are dispatched through a command dictionary. |
+| `loader/watcher.py` | `Watcher`: configuration watcher — background daemon thread (scan / settle / fix / backoff). No stdout; state read via `status()`. |
 | `loader/core.py` | Shared: unified `ConfigStore` + `Preset`, load-config matching, `LMStudio` SDK wrapper, action log. |
 | `loader/model_configs.json` | The unified config file: models, named load presets, and which preset the watcher enforces. |
 
@@ -77,7 +77,7 @@ dynamic-loader>
 | `quit` | Stop the watcher and exit (also `exit`/`q`/Ctrl+C). |
 
 Unknown commands print a hint; SDK errors are caught, logged, and do not kill
-the REPL.
+the interactive CLI.
 
 Intended flow: start app → `watch start` → `opencode` (the config watcher
 keeps running during the session) → back at the menu → `quit`.
