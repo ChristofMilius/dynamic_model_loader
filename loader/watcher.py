@@ -1,12 +1,13 @@
-"""Reactive watcher for the dynamic model loader.
+"""Configuration watcher for the dynamic model loader.
 
-Watcher OOP: a background daemon thread that polls LM Studio and corrects the
-load config of models that are already loaded. It never loads a model on its
-own and never reloads a model that is not loaded (a manually unloaded model
-stays unloaded). It only reacts to loaded models it has a load config for.
+A background daemon thread that polls LM Studio and corrects the load config of
+models that are already loaded. It never loads a model on its own and never
+reloads a model that is not loaded (a manually unloaded model stays unloaded).
+It only reacts to loaded models it has a load config for.
 
-The watcher writes no output to stdout (the menu owns the terminal); state and
-fixes go to the shared action log, and the menu reads status via status().
+The watcher writes no output to stdout (the interactive CLI owns the terminal);
+state and fixes go to the shared action log, and the CLI reads status via
+status().
 """
 
 import threading

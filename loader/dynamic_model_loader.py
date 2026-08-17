@@ -1,13 +1,13 @@
 """Dynamic model loader for LM Studio.
 
-One unified terminal menu combining the proactive and reactive loaders:
+A unified interactive CLI combining model loading and configuration management:
 
 - Proactive: pick a named load preset from a menu and load the model through
   the LM Studio Python SDK.
-- Reactive: a background watcher (watcher.py) makes sure a loaded model keeps
+- Automatic: a background watcher (watcher.py) makes sure a loaded model keeps
   its configured load config. It never force-loads and never reloads a model
   that was manually unloaded.
-- The menu can also launch opencode (native CLI) while the watcher keeps
+- The CLI can also launch opencode (native CLI) while the watcher keeps
   running, and quit.
 """
 
@@ -126,7 +126,7 @@ class CommandDispatcher:
 
 
 class DynamicModelLoader:
-    """Main application: config store, LM Studio wrapper, watcher, REPL."""
+    """Main application: config store, LM Studio wrapper, watcher, CLI."""
 
     def __init__(self):
         self.config_store = ConfigStore()
