@@ -110,7 +110,7 @@ class Watcher:
         first = True
         while not self._stop.is_set():
             try:
-                with lms.Client() as client:
+                with lms.Client(api_token=self.lmstudio._api_token) as client:
                     while not self._stop.is_set():
                         if not first:
                             self._stop.wait(interval)

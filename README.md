@@ -201,5 +201,5 @@ The parser also accepts the old shapes:
 
 - uv, which manages Python 3.13 (pinned in `.python-version`) and the `.venv`
   environment (installs the `lmstudio` SDK per `pyproject.toml`/`uv.lock`).
-- LM Studio with the local server running (API-token auth disabled; the SDK
-  build in use cannot send a token).
+- LM Studio with the local server running. If API-token auth is enabled,
+  set the `LM_API_TOKEN` environment variable (the SDK reads it automatically).
