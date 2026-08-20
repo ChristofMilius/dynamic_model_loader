@@ -189,6 +189,13 @@ class DynamicModelLoader:
         identifier = self.lmstudio.load(preset.model_key, preset.config)
         print(f"Loaded: {identifier}")
         log_action("load", {"model": preset.model_key, "preset": preset.name, "identifier": identifier})
+        watched = self.config_store.watch_preset_names()
+        if watched.get(preset.model_key) == preset.name:
+            if self.watcher.running:
+                print("Watcher running.")
+            else:
+                self.watcher.start()
+                print("Watcher started.")
         return True
 
     def cmd_unload(self, args):
