@@ -20,3 +20,6 @@ loader/model_configs.json
 
 # Windows shortcuts
 *.lnk
+
+# Brainstorming notes, never commit
+proposal.md
