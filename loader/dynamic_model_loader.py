@@ -338,14 +338,14 @@ class DynamicModelLoader:
         if not isinstance(overrides, dict):
             overrides = {}
         try:
-            changed, missing = sync(DEFAULT_CONFIG_PATH, watched, overrides)
+            changed, added = sync(DEFAULT_CONFIG_PATH, watched, overrides)
         except OSError as e:
             print(f"Error: cannot update {DEFAULT_CONFIG_PATH}: {e}")
             return True
         print(f"Synced {changed} model(s) into {DEFAULT_CONFIG_PATH}")
         print(f"  providers: {', '.join(PROVIDERS)}")
-        for _, key in missing:
-            print(f"  not found in opencode config (skipped): {key}")
+        for _, key in added:
+            print(f"  added new model: {key}")
         print("Restart opencode for the changes to take effect.")
         return True
 
