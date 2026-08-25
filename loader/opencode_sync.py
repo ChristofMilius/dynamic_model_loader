@@ -5,8 +5,8 @@ LM Studio providers' model lists with only a ``name``. This module edits those
 entries in place — preserving JSONC comments and formatting — so opencode knows
 each model's context window and reasoning capability.
 
-Only models already present in the config are updated; missing ones are
-reported, not added.
+Models already present are updated in place. Models that are watched in the
+loader but missing from any provider are added to that provider's model list.
 """
 
 import json
@@ -148,8 +148,11 @@ def sync(config_path, watched_desired, overrides=None, providers=None):
     watched presets). ``overrides``: ``{model_key: {"reasoning": bool,
     "output": int}}`` from the config's optional ``opencode`` section.
 
-    Returns ``(changed, missing)`` where ``missing`` lists model keys not found
-    in the config's provider model lists.
+    Models already present are updated in place. Models not yet present are
+    added to each provider that doesn't have them.
+
+    Returns ``(changed, added)`` where ``added`` lists ``(provider, model_key)``
+    tuples for models newly inserted.
     """
     overrides = overrides or {}
     providers = providers or PROVIDERS
@@ -157,7 +160,8 @@ def sync(config_path, watched_desired, overrides=None, providers=None):
         text = fh.read()
 
     edits = []
-    missing = []
+    added = []
+
     for provider in providers:
         root = _find_key(text, "provider", 0, len(text))
         if root is None:
@@ -179,29 +183,48 @@ def sync(config_path, watched_desired, overrides=None, providers=None):
             continue
         for model_key, desired in watched_desired.items():
             mk = _find_key(text, model_key, mobj_start, mobj_end)
-            if mk is None:
-                missing.append((provider, model_key))
-                continue
-            vstart, vend = _value_span(text, mk)
-            if vstart is None or text[vstart] != "{":
-                missing.append((provider, model_key))
-                continue
+            if mk is not None:
+                vstart, vend = _value_span(text, mk)
+                if vstart is not None and text[vstart] == "{":
+                    context = desired.get("contextLength") or desired.get("context_length")
+                    ov = overrides.get(model_key) or {}
+                    reasoning = ov.get("reasoning")
+                    if reasoning is None:
+                        reasoning = "reasoning" in model_key
+                    name = _existing_name(text, vstart, vend) or model_key.rsplit("/", 1)[-1]
+                    entry = _build_entry(name, context, bool(reasoning), ov.get("output"))
+                    key_line_start = text.rfind("\n", 0, mk) + 1
+                    key_indent = len(text[key_line_start:mk]) - len(text[key_line_start:mk].lstrip(" "))
+                    rep = _render(entry, key_indent)
+                    if text[vstart:vend] != rep:
+                        edits.append((vstart, vend, rep))
+                    continue
             context = desired.get("contextLength") or desired.get("context_length")
             ov = overrides.get(model_key) or {}
             reasoning = ov.get("reasoning")
             if reasoning is None:
                 reasoning = "reasoning" in model_key
-            name = _existing_name(text, vstart, vend) or model_key.rsplit("/", 1)[-1]
+            name = model_key.rsplit("/", 1)[-1]
             entry = _build_entry(name, context, bool(reasoning), ov.get("output"))
-            key_line_start = text.rfind("\n", 0, mk) + 1
-            key_indent = len(text[key_line_start:mk]) - len(text[key_line_start:mk].lstrip(" "))
-            rep = _render(entry, key_indent)
-            if text[vstart:vend] == rep:
-                continue
-            edits.append((vstart, vend, rep))
+            inner = text[mobj_start + 1:mobj_end - 1].rstrip()
+            has_entries = bool(inner.strip())
+            key_line_start = text.rfind("\n", 0, mkey) + 1
+            key_indent = len(text[key_line_start:mkey]) - len(text[key_line_start:mkey].lstrip(" "))
+            entry_indent = key_indent + 2
+            rendered = _render(entry, entry_indent)
+            entry_line = " " * entry_indent + json.dumps(model_key) + ": " + rendered
+            if has_entries:
+                last_close = text.rfind("}", mobj_start, mobj_end - 1)
+                insert_at = last_close + 1
+                rep = ",\n" + entry_line
+            else:
+                insert_at = mobj_start + 1
+                rep = "\n" + entry_line
+            edits.append((insert_at, insert_at, rep))
+            added.append((provider, model_key))
 
     for vstart, vend, rep in sorted(edits, reverse=True):
         text = text[:vstart] + rep + text[vend:]
     with open(config_path, "w", encoding="utf-8") as fh:
         fh.write(text)
-    return len(edits), missing
+    return len(edits), added

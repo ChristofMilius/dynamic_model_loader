@@ -140,9 +140,9 @@ Example format:
 (`~/.config/opencode/opencode.jsonc`) so opencode knows the context sizes of the
 models it offers. For each model the watcher enforces (a model with
 `watch: true`), it sets `limit.context` / `limit.input` to the watched preset's
-`contextLength` and `limit.output` to a quarter of it (min 1024). Only models
-that already exist in the opencode config are updated — missing ones are
-reported and skipped. Restart opencode afterwards for the changes to apply.
+`contextLength` and `limit.output` to a quarter of it (min 1024). Models already
+in the opencode config are updated in place. Models not yet present are added to
+each provider's model list. Restart opencode afterwards for the changes to apply.
 
 An optional top-level `opencode` section overrides per-model sync fields:
 
