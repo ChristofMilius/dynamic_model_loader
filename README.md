@@ -204,7 +204,7 @@ may confuse the freshly loaded model.
 The plugin:
 - Removes empty assistant messages (no text or tool parts)
 - Merges consecutive user messages into one
-- Logs metadata (role, part count, tools) to `E:/TEMP/opencode/msg_normalize.log`
+- Logs metadata (role, part count, tools) to `<tmpdir>/opencode/msg_normalize.log`
 
 The plugin is auto-loaded by opencode from the project's `.opencode/plugins/`
 directory — no manual installation required.
