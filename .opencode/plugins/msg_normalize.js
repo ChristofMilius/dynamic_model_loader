@@ -1,4 +1,6 @@
-const LOG = "E:/TEMP/opencode/msg_normalize.log"
+const { join } = await import("node:path")
+const { tmpdir } = await import("node:os")
+const LOG = join(tmpdir(), "opencode", "msg_normalize.log")
 
 export default async function () {
   return {
