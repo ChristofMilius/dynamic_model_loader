@@ -193,9 +193,21 @@ The parser also accepts the old shapes:
   install.
 - The config file must sit in the same directory as the script; it is resolved
   relative to the loader's own location (`BASE_DIR` in `core.py`).
-- The opencode launcher shim was archived and removed so `opencode` resolves
-  to the native `OpenCode.exe` CLI again. The `devstral-normalize.js` plugin
-  in `~/.config/opencode/plugin/` remains required and untouched.
+### Message normalize plugin
+
+`.opencode/plugins/msg_normalize.js` is an opencode plugin that normalizes
+chat messages before they reach the model. It is especially important when
+the config watcher reloads a model mid-session: the reload can leave empty
+assistant messages or consecutive user messages in opencode's context, which
+may confuse the freshly loaded model.
+
+The plugin:
+- Removes empty assistant messages (no text or tool parts)
+- Merges consecutive user messages into one
+- Logs metadata (role, part count, tools) to `E:/TEMP/opencode/msg_normalize.log`
+
+The plugin is auto-loaded by opencode from the project's `.opencode/plugins/`
+directory — no manual installation required.
 
 ## Dependencies
 
