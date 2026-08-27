@@ -1,3 +1,30 @@
+/**
+ * msg_normalize.js — OpenCode chat-message normalizer
+ *
+ * Part of the dynamic_model_loader project. This plugin sits between
+ * opencode's chat pipeline and the model, cleaning up message arrays
+ * before they are sent.
+ *
+ * Why it exists:
+ *   When the config watcher reloads a model mid-session (e.g. to fix a
+ *   drifted load config), opencode can be left with stale or malformed
+ *   messages in its context — empty assistant turns, or consecutive user
+ *   messages that should have been merged. Some models reject or
+ *   misinterpret these, producing degraded output or errors.
+ *
+ * What it does:
+ *   1. Removes assistant messages that contain no text or tool parts.
+ *   2. Merges consecutive user messages into a single message.
+ *   3. Appends metadata-only log entries (role, part count, tools) to
+ *      <tmpdir>/opencode/msg_normalize.log — no message content is logged.
+ *
+ * This is a workaround for opencode not normalizing its own message
+ * array after external model lifecycle events. It should be removed
+ * once opencode handles this natively.
+ *
+ * Location: .opencode/plugins/ (project-level, auto-loaded by opencode)
+ */
+
 const { join } = await import("node:path")
 const { tmpdir } = await import("node:os")
 const LOG = join(tmpdir(), "opencode", "msg_normalize.log")
