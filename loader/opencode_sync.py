@@ -111,13 +111,50 @@ def _value_span(text, colon_idx):
     return None, None
 
 
-def _existing_name(text, vstart, vend):
+def _existing_entry(text, vstart, vend):
     try:
         obj = json.loads(text[vstart:vend])
     except Exception:
-        return None
-    name = obj.get("name")
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _existing_name(text, vstart, vend):
+    name = _existing_entry(text, vstart, vend).get("name")
     return name if isinstance(name, str) and name else None
+
+
+def _resolve_modalities(ov, existing):
+    """Resolve modalities for a model entry.
+
+    Precedence: explicit ``modalities`` override > ``vision`` override >
+    preserved existing value. ``vision: true`` maps to text+image input,
+    ``vision: false`` maps to no modalities (text-only default).
+    """
+    ov_mod = ov.get("modalities")
+    if isinstance(ov_mod, dict) and ov_mod:
+        return ov_mod
+    ov_vision = ov.get("vision")
+    if ov_vision is True:
+        return {"input": ["text", "image"], "output": ["text"]}
+    if ov_vision is False:
+        return None
+    existing_mod = (existing or {}).get("modalities")
+    if isinstance(existing_mod, dict) and existing_mod:
+        return existing_mod
+    return None
+
+
+def _resolve_attachment(ov, existing):
+    ov_att = ov.get("attachment")
+    if isinstance(ov_att, bool):
+        return ov_att
+    if ov.get("vision") is True:
+        return True
+    existing_att = (existing or {}).get("attachment")
+    if isinstance(existing_att, bool):
+        return existing_att
+    return None
 
 
 def _render(entry, key_indent):
@@ -130,10 +167,14 @@ def _render(entry, key_indent):
     return "\n".join(lines)
 
 
-def _build_entry(name, context, reasoning, output):
+def _build_entry(name, context, reasoning, output, modalities=None, attachment=None):
     entry = {"name": name}
     if reasoning:
         entry["reasoning"] = True
+    if modalities:
+        entry["modalities"] = modalities
+    if attachment is True:
+        entry["attachment"] = True
     if context:
         limit = {"context": context, "input": context}
         limit["output"] = output or max(1024, context // 4)
@@ -146,7 +187,15 @@ def sync(config_path, watched_desired, overrides=None, providers=None):
 
     ``watched_desired``: ``{model_key: desired_load_config}`` (the loader's
     watched presets). ``overrides``: ``{model_key: {"reasoning": bool,
-    "output": int}}`` from the config's optional ``opencode`` section.
+    "output": int, "vision": bool, "modalities": dict, "attachment": bool}}``
+    from the config's optional ``opencode`` section.
+
+    ``vision: true`` writes ``modalities: {input: [text, image], output: [text]}``
+    plus ``attachment: true`` so opencode sends images to the model.
+    ``vision: false`` leaves the entry text-only. An explicit ``modalities``
+    dict wins over ``vision``. Without any override the existing entry's
+    ``modalities``/``attachment`` are preserved so manual vision edits survive
+    a re-sync.
 
     Models already present are updated in place. Models not yet present are
     added to each provider that doesn't have them.
@@ -191,8 +240,16 @@ def sync(config_path, watched_desired, overrides=None, providers=None):
                     reasoning = ov.get("reasoning")
                     if reasoning is None:
                         reasoning = "reasoning" in model_key
+                    existing = _existing_entry(text, vstart, vend)
                     name = _existing_name(text, vstart, vend) or model_key.rsplit("/", 1)[-1]
-                    entry = _build_entry(name, context, bool(reasoning), ov.get("output"))
+                    entry = _build_entry(
+                        name,
+                        context,
+                        bool(reasoning),
+                        ov.get("output"),
+                        _resolve_modalities(ov, existing),
+                        _resolve_attachment(ov, existing),
+                    )
                     key_line_start = text.rfind("\n", 0, mk) + 1
                     key_indent = len(text[key_line_start:mk]) - len(text[key_line_start:mk].lstrip(" "))
                     rep = _render(entry, key_indent)
@@ -205,7 +262,14 @@ def sync(config_path, watched_desired, overrides=None, providers=None):
             if reasoning is None:
                 reasoning = "reasoning" in model_key
             name = model_key.rsplit("/", 1)[-1]
-            entry = _build_entry(name, context, bool(reasoning), ov.get("output"))
+            entry = _build_entry(
+                name,
+                context,
+                bool(reasoning),
+                ov.get("output"),
+                _resolve_modalities(ov, {}),
+                _resolve_attachment(ov, {}),
+            )
             inner = text[mobj_start + 1:mobj_end - 1].rstrip()
             has_entries = bool(inner.strip())
             key_line_start = text.rfind("\n", 0, mkey) + 1

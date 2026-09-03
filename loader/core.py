@@ -333,6 +333,72 @@ class ConfigStore:
             fh.write("\n")
         self.reload()
 
+    def set_opencode_override(self, model_key, vision=None, modalities=None):
+        """Upsert an opencode override for ``model_key``.
+
+        ``vision``: bool or None. ``True`` -> vision, ``False`` -> text-only.
+        ``modalities``: explicit dict wins over ``vision``. ``None`` removes
+        the vision flag only when ``modalities`` is also None (no-op).
+        Writes the config file and reloads. Returns True if the file changed.
+        """
+        if vision is None and modalities is None:
+            return False
+        oc = self.raw.get("opencode")
+        if not isinstance(oc, dict):
+            oc = {}
+            self.raw["opencode"] = oc
+        mmodels = oc.get("models")
+        if not isinstance(mmodels, dict):
+            mmodels = {}
+            oc["models"] = mmodels
+        entry = mmodels.get(model_key)
+        if not isinstance(entry, dict):
+            entry = {}
+            mmodels[model_key] = entry
+        changed = False
+        if isinstance(modalities, dict) and modalities:
+            if entry.get("modalities") != modalities:
+                entry["modalities"] = modalities
+                entry.pop("vision", None)
+                changed = True
+        elif isinstance(vision, bool):
+            if entry.get("vision") is not vision:
+                entry["vision"] = vision
+                # explicit vision replaces any stale explicit modalities
+                if "modalities" in entry:
+                    entry.pop("modalities")
+                changed = True
+        if not changed:
+            return False
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(self.raw, fh, indent=2)
+            fh.write("\n")
+        self.reload()
+        return True
+
+    def ensure_opencode_vision(self, model_key, vision, source=None):
+        """Ensure the opencode vision flag reflects a probed capability.
+
+        Only writes when the probed ``vision`` (bool) would change the
+        effective sync outcome: an existing explicit ``vision`` or
+        ``modalities`` override is left alone unless it disagrees.
+        """
+        cur = self.raw.get("opencode", {}).get("models", {}).get(model_key)
+        if isinstance(cur, dict) and ("vision" in cur or "modalities" in cur):
+            # respect explicit override, but fix it if it contradicts probe
+            want_modalities = None
+            cur_vision = cur.get("vision")
+            cur_mod = cur.get("modalities")
+            if isinstance(cur_mod, dict) and cur_mod:
+                cur_vision_eff = "image" in (cur_mod.get("input") or [])
+            elif isinstance(cur_vision, bool):
+                cur_vision_eff = cur_vision
+            else:
+                cur_vision_eff = None
+            if cur_vision_eff is vision:
+                return False
+        return self.set_opencode_override(model_key, vision=vision)
+
 
 class LMStudio:
     """Thin wrapper around the lmstudio SDK. Each call opens its own client."""

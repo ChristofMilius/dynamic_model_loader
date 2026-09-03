@@ -164,6 +164,14 @@ An optional top-level `opencode` section overrides per-model sync fields:
 - **`reasoning`** — write `"reasoning": true` on the model entry. Without an
   override, it is inferred from the model key (enabled when the key contains
   `reasoning`).
+- **`vision`** — write `"vision": true` to enable image input
+  (`modalities: {input: [text, image], output: [text]}` plus
+  `"attachment": true`) so opencode sends images to the model.
+  `"vision": false` keeps the entry text-only. An explicit `"modalities"`
+  dict wins over `"vision"`. Without any override the existing entry's
+  `modalities`/`attachment` are preserved so manual vision edits survive a
+  re-sync. Check LM Studio's model `vision` flag
+  (`client.llm.list_downloaded()` → `info.vision`) to decide per model.
 
 ### Watcher semantics
 
