@@ -87,6 +87,7 @@ class CommandDispatcher:
     def __init__(self, app):
         self.app = app
         self.commands = {
+            "capabilities": {"handler": app.cmd_capabilities, "help": "probe LM Studio / OpenAI exposures for a model; 'capabilities <model_key>' or interactive"},
             "exit": {"handler": app.cmd_quit, "help": "stop the watcher and exit (alias for 'quit')"},
             "help": {"handler": app.cmd_help, "help": "show help; 'help <command>' for details"},
             "import": {"handler": app.cmd_import, "help": "import a loaded instance's load config as a preset; 'import N' selects instance N directly"},
@@ -95,6 +96,7 @@ class CommandDispatcher:
             "models": {"handler": app.cmd_models, "help": "list models available in LM Studio"},
             "opencode": {"handler": app.cmd_opencode, "help": "launch opencode (native CLI); args are passed through"},
             "presets": {"handler": app.cmd_presets, "help": "list configured load presets, marking watched ones"},
+            "probe": {"handler": app.cmd_capabilities, "help": "alias for 'capabilities'"},
             "q": {"handler": app.cmd_quit, "help": "stop the watcher and exit (alias for 'quit')"},
             "quit": {"handler": app.cmd_quit, "help": "stop the watcher and exit (also 'exit'/'q')"},
             "reload": {"handler": app.cmd_reload, "help": "re-read model_configs.json"},
@@ -285,6 +287,41 @@ class DynamicModelLoader:
         print(f"Importing load config for {identifier}:")
         for k, v in config.items():
             print(f"  {k}: {v}")
+        # Probe every API exposure for capabilities (LMS native -> OpenAI)
+        try:
+            from loader.capabilities import probe_all
+
+            print(f"Probing capabilities for {model_key} ...")
+            probe = probe_all(model_key)
+            for leg in ("lmstudio_sdk", "lmstudio_api_v1", "lmstudio_api_v0", "openai_compat"):
+                entry = probe.get(leg, {})
+                tag = leg.replace("_", "/")
+                if entry.get("ok"):
+                    details = []
+                    if "vision" in entry:
+                        details.append(f"vision={entry['vision']}")
+                    if "tool_use" in entry and entry["tool_use"] is not None:
+                        details.append(f"tool_use={entry['tool_use']}")
+                    if entry.get("type"):
+                        details.append(f"type={entry['type']}")
+                    if entry.get("exposed"):
+                        details.append("exposed")
+                    detail_str = ", ".join(details) if details else "ok"
+                    print(f"  {tag}: {entry.get('source','')} -> {detail_str}")
+                else:
+                    print(f"  {tag}: {entry.get('error','no data')}")
+            merged = probe.get("merged", {})
+            vision = merged.get("vision")
+            if isinstance(vision, bool):
+                print(f"  merged vision={vision} via {merged.get('vision_source')}")
+            else:
+                print("  merged vision=unknown (no chatty endpoint)")
+            probe_vision = vision
+            probe_source = merged.get("vision_source")
+        except Exception as e:
+            print(f"  capability probe failed: {type(e).__name__}: {e}")
+            probe_vision = None
+            probe_source = None
         name = self._prompt("Preset name", "imported")
         if not name:
             print("Cancelled.")
@@ -304,7 +341,18 @@ class DynamicModelLoader:
         state = f"{model_key}  [{name}, ctx={config.get('contextLength') or 'default'}]"
         print(f"Saved: {state}")
         print(f"  -> {self.config_store.path}")
-        log_action("import", {"model": model_key, "preset": name, "watch": watch})
+        if isinstance(probe_vision, bool):
+            try:
+                if self.config_store.ensure_opencode_vision(model_key, probe_vision, source=probe_source):
+                    print(f"  -> opencode vision={probe_vision} stored (via {probe_source})")
+                    log_action("import:vision", {"model": model_key, "vision": probe_vision, "source": probe_source})
+                else:
+                    print(f"  -> opencode vision already {probe_vision}, unchanged")
+            except Exception as e:
+                print(f"  warning: could not store vision flag: {e}")
+        else:
+            print("  -> no vision override stored (probe was inconclusive)")
+        log_action("import", {"model": model_key, "preset": name, "watch": watch, "probe_vision": probe_vision})
         return True
 
     def cmd_status(self, args):
@@ -337,8 +385,36 @@ class DynamicModelLoader:
         overrides = self.config_store.raw.get("opencode", {}).get("models", {})
         if not isinstance(overrides, dict):
             overrides = {}
+        # enrich missing vision flags live from LMS so old configs without
+        # opencode.vision still sync vision correctly; manual overrides win
+        enriched = dict(overrides)
         try:
-            changed, added = sync(DEFAULT_CONFIG_PATH, watched, overrides)
+            from loader.capabilities import probe_all
+
+            for key in list(watched):
+                ov = enriched.get(key)
+                if isinstance(ov, dict) and ("vision" in ov or "modalities" in ov):
+                    continue
+                try:
+                    probe = probe_all(key)
+                    v = probe.get("merged", {}).get("vision")
+                    if isinstance(v, bool):
+                        src = probe["merged"].get("vision_source", "live probe")
+                        print(f"  live probe {key}: vision={v} ({src}) -> enriching sync")
+                        # transient enrich for this sync
+                        enriched[key] = dict(ov or {})
+                        enriched[key]["vision"] = v
+                        # also persist so next sync works offline
+                        try:
+                            self.config_store.ensure_opencode_vision(key, v, source=src)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            changed, added = sync(DEFAULT_CONFIG_PATH, watched, enriched)
         except OSError as e:
             print(f"Error: cannot update {DEFAULT_CONFIG_PATH}: {e}")
             return True
@@ -354,6 +430,61 @@ class DynamicModelLoader:
         for w in self.config_store.warnings():
             print(f"warning: {w}")
         print(f"Config reloaded from {self.config_store.path}")
+        return True
+
+    def cmd_capabilities(self, args):
+        """Probe capabilities across LMS native and OpenAI compat."""
+        from loader.capabilities import probe_all
+
+        target = " ".join(args).strip() if args else ""
+        if not target:
+            # offer picker from downloaded or presets
+            try:
+                models = self.lmstudio.list_downloaded()
+                keys = [k for k, _ in models]
+            except Exception:
+                keys = []
+            if keys:
+                idx = Menu.choose("Probe which model:", keys)
+                if idx is None:
+                    print("Cancelled.")
+                    return True
+                target = keys[idx]
+            else:
+                target = self._prompt("Model key to probe", "")
+                if not target:
+                    print("Cancelled.")
+                    return True
+        print(f"Probing {target} ...")
+        probe = probe_all(target)
+        for leg in ("lmstudio_sdk", "lmstudio_api_v1", "lmstudio_api_v0", "openai_compat"):
+            entry = probe.get(leg, {})
+            tag = leg.replace("_", "/")
+            if entry.get("ok"):
+                details = []
+                if "vision" in entry:
+                    details.append(f"vision={entry['vision']}")
+                if "tool_use" in entry and entry["tool_use"] is not None:
+                    details.append(f"tool_use={entry['tool_use']}")
+                if entry.get("type"):
+                    details.append(f"type={entry['type']}")
+                if entry.get("exposed"):
+                    details.append("exposed")
+                if entry.get("max_context"):
+                    details.append(f"ctx={entry['max_context']}")
+                detail_str = ", ".join(details) if details else "ok"
+                print(f"  {tag}: {entry.get('source','')} -> {detail_str}")
+            else:
+                print(f"  {tag}: {entry.get('error','no data')}")
+        m = probe.get("merged", {})
+        print(f"merged: vision={m.get('vision')} (via {m.get('vision_source')}), tool_use={m.get('tool_use')}, max_context={m.get('max_context')}")
+        if isinstance(m.get("vision"), bool):
+            resp = self._prompt(f"Store opencode vision={m['vision']} for {target}", "n").lower() in ("y", "yes")
+            if resp:
+                if self.config_store.ensure_opencode_vision(target, m["vision"], source=m.get("vision_source")):
+                    print(f"Stored opencode.models.{target}.vision={m['vision']}")
+                else:
+                    print("Already stored, unchanged")
         return True
 
     def cmd_quit(self, args):
