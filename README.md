@@ -210,14 +210,39 @@ An optional top-level `opencode` section overrides per-model sync fields:
 - Never loads a model that isn't loaded — manually unloaded models stay
   unloaded.
 
-### Legacy formats
+### What if a model has no `presets`?
 
-The parser also accepts the old shapes:
+Normally a model entry looks like this:
 
-- A model entry that is itself a load config (no `presets`) is treated as one
-  implicit preset named `default`, and is watched by default unless
-  `"watch": false` is set. This covers the two legacy config shapes: a model
-  entry holding a single load config, and a flat desired-config form.
+```json
+{
+  "models": {
+    "org/my-model": {
+      "watch": true,
+      "watchPreset": "default",
+      "presets": {
+        "default": { "contextLength": 32768 }
+      }
+    }
+  }
+}
+```
+
+But the config also accepts a model whose entry *is* the load config directly,
+without a `presets` wrapper:
+
+```json
+{
+  "models": {
+    "org/my-model": { "contextLength": 32768 }
+  }
+}
+```
+
+In that shorthand form the entry counts as a single preset named `default`, and
+the model is treated as watched by default — set `"watch": false` to opt out.
+`import` and menu commands always write the full `presets` form, so you'll only
+see the shorthand if you hand-wrote a config or kept one from an older version.
 
 ---
 
