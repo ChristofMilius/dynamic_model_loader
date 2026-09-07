@@ -376,6 +376,37 @@ class ConfigStore:
         self.reload()
         return True
 
+    def remove_model(self, model_key):
+        """Delete a model's load config from the loader config.
+
+        Removes the model entry (and any presets) from ``models`` and drops any
+        ``opencode.models`` override for it, then persists and reloads. Returns
+        True if the config file changed.
+        """
+        models = self.raw.get("models")
+        had_model = isinstance(models, dict) and model_key in models
+        oc_models = self.raw.get("opencode", {}).get("models")
+        had_oc = isinstance(oc_models, dict) and model_key in oc_models
+        if not had_model and not had_oc:
+            return False
+        if had_model:
+            del models[model_key]
+            if not models:
+                self.raw.pop("models", None)
+        if had_oc:
+            del oc_models[model_key]
+            if not oc_models:
+                oc = self.raw.get("opencode")
+                if isinstance(oc, dict):
+                    oc.pop("models", None)
+                    if not oc:
+                        self.raw.pop("opencode", None)
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(self.raw, fh, indent=2)
+            fh.write("\n")
+        self.reload()
+        return True
+
     def ensure_opencode_vision(self, model_key, vision, source=None):
         """Ensure the opencode vision flag reflects a probed capability.
 

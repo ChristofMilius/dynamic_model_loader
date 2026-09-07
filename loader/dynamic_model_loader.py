@@ -100,6 +100,7 @@ class CommandDispatcher:
             "q": {"handler": app.cmd_quit, "help": "stop the watcher and exit (alias for 'quit')"},
             "quit": {"handler": app.cmd_quit, "help": "stop the watcher and exit (also 'exit'/'q')"},
             "reload": {"handler": app.cmd_reload, "help": "re-read model_configs.json"},
+            "remove": {"handler": app.cmd_remove, "help": "remove a model's load config and its opencode entry; 'remove N' selects preset N directly"},
             "status": {"handler": app.cmd_status, "help": "connection summary + watcher state"},
             "sync-opencode": {"handler": app.cmd_sync_opencode, "help": "update opencode's LM Studio model lists with the watched presets' context limits"},
             "unload": {"handler": app.cmd_unload, "help": "unload a loaded instance; 'unload N' selects instance N directly"},
@@ -215,6 +216,43 @@ class DynamicModelLoader:
         self.lmstudio.unload(identifier)
         print(f"Unloaded: {identifier}")
         log_action("unload", {"identifier": identifier})
+        return True
+
+    def cmd_remove(self, args):
+        presets = self.config_store.presets()
+        if not presets:
+            print("No load presets defined in the config file.")
+            return True
+        # dedupe by model key: removal drops a whole model, one opencode entry
+        seen = {}
+        for p in presets:
+            seen.setdefault(p.model_key, p)
+        entries = list(seen.values())
+        if not entries:
+            print("No load presets defined in the config file.")
+            return True
+        idx = self._resolve_index(args, len(entries))
+        if idx is None:
+            idx = Menu.choose(
+                "Remove which model load config:", [p.label for p in entries]
+            )
+        if idx is None:
+            print("Cancelled.")
+            return True
+        model_key = entries[idx].model_key
+        ans = self._prompt(
+            f"Remove load config for {model_key} (and its opencode entry)", "n"
+        ).lower()
+        if ans not in ("y", "yes"):
+            print("Cancelled.")
+            return True
+        if self.config_store.remove_model(model_key):
+            print(f"Removed load config for {model_key} from {self.config_store.path}")
+        else:
+            print(f"No config for {model_key} to remove.")
+        log_action("remove", {"model": model_key})
+        # prune the model's entry from opencode's providers too
+        self._sync_opencode(verbose=False)
         return True
 
     def cmd_presets(self, args):
@@ -377,53 +415,68 @@ class DynamicModelLoader:
         print(f"Watcher: {'running' if st['running'] else 'stopped'} (state: {st['state']})")
         return True
 
-    def cmd_sync_opencode(self, args):
+    def _sync_opencode(self, verbose=True):
+        """Run the opencode provider sync; returns True on success."""
         watched = self.config_store.watch_desired()
-        if not watched:
-            print("No watched models in the config; nothing to sync.")
-            return True
         overrides = self.config_store.raw.get("opencode", {}).get("models", {})
         if not isinstance(overrides, dict):
             overrides = {}
         # enrich missing vision flags live from LMS so old configs without
         # opencode.vision still sync vision correctly; manual overrides win
         enriched = dict(overrides)
-        try:
-            from loader.capabilities import probe_all
+        if verbose:
+            try:
+                from loader.capabilities import probe_all
 
-            for key in list(watched):
-                ov = enriched.get(key)
-                if isinstance(ov, dict) and ("vision" in ov or "modalities" in ov):
-                    continue
-                try:
-                    probe = probe_all(key)
-                    v = probe.get("merged", {}).get("vision")
-                    if isinstance(v, bool):
-                        src = probe["merged"].get("vision_source", "live probe")
-                        print(f"  live probe {key}: vision={v} ({src}) -> enriching sync")
-                        # transient enrich for this sync
-                        enriched[key] = dict(ov or {})
-                        enriched[key]["vision"] = v
-                        # also persist so next sync works offline
-                        try:
-                            self.config_store.ensure_opencode_vision(key, v, source=src)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                for key in list(watched):
+                    ov = enriched.get(key)
+                    if isinstance(ov, dict) and ("vision" in ov or "modalities" in ov):
+                        continue
+                    try:
+                        probe = probe_all(key)
+                        v = probe.get("merged", {}).get("vision")
+                        if isinstance(v, bool):
+                            src = probe["merged"].get("vision_source", "live probe")
+                            print(f"  live probe {key}: vision={v} ({src}) -> enriching sync")
+                            # transient enrich for this sync
+                            enriched[key] = dict(ov or {})
+                            enriched[key]["vision"] = v
+                            # also persist so next sync works offline
+                            try:
+                                self.config_store.ensure_opencode_vision(key, v, source=src)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         try:
-            changed, added = sync(DEFAULT_CONFIG_PATH, watched, enriched)
+            changed, added, removed = sync(
+                DEFAULT_CONFIG_PATH,
+                watched,
+                enriched,
+                remove_missing=list(self.config_store.data),
+            )
         except OSError as e:
             print(f"Error: cannot update {DEFAULT_CONFIG_PATH}: {e}")
-            return True
-        print(f"Synced {changed} model(s) into {DEFAULT_CONFIG_PATH}")
-        print(f"  providers: {', '.join(PROVIDERS)}")
-        for _, key in added:
-            print(f"  added new model: {key}")
-        print("Restart opencode for the changes to take effect.")
+            return False
+        if verbose:
+            if not watched and not added and not removed:
+                print("No watched models in the config; nothing to sync.")
+            print(f"Synced {changed} model(s) into {DEFAULT_CONFIG_PATH}")
+            print(f"  providers: {', '.join(PROVIDERS)}")
+            for _, key in added:
+                print(f"  added new model: {key}")
+            for _, key in removed:
+                print(f"  removed stale model: {key}")
+            print("Restart opencode for the changes to take effect.")
+        elif removed or added:
+            for _, key in removed:
+                print(f"  removed {key} from opencode")
         return True
+
+    def cmd_sync_opencode(self, args):
+        return self._sync_opencode(verbose=True)
 
     def cmd_reload(self, args):
         self.config_store.reload()

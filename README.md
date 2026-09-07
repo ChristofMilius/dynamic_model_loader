@@ -65,6 +65,7 @@ dynamic-loader>
 | `loaded` | Loaded instances with their current load config. |
 | `load [N]` | Numbered menu of known load presets → load via the SDK. |
 | `unload [N]` | Numbered menu of loaded instances → unload. |
+| `remove [N]` | Numbered menu of configured load presets (one entry per model) → delete a model's load config from the loader config, then prune its entry from opencode's LM Studio model lists. Prompts for confirmation first. |
 | `import [N]` | Import a loaded instance's current load config as a named preset (e.g. copy a well-tuned config already running in LM Studio). Prompts for a preset name and whether the watcher should enforce it. The preset attaches to the base model key (an instance suffix like `:2` is stripped); enabling the watcher replaces the model's previous watched preset. |
 | `presets` | Configured load presets, marking which are enforced by the watcher. |
 | `watch start` | Start the config watcher in the background. |
@@ -142,7 +143,33 @@ models it offers. For each model the watcher enforces (a model with
 `watch: true`), it sets `limit.context` / `limit.input` to the watched preset's
 `contextLength` and `limit.output` to a quarter of it (min 1024). Models already
 in the opencode config are updated in place. Models not yet present are added to
-each provider's model list. Restart opencode afterwards for the changes to apply.
+each provider's model list.
+
+`sync-opencode` also prunes stale entries. A model that is no longer in the
+loader's `models` config (for example after you delete its download from LM
+Studio and drop its load config) is removed from both local LM Studio providers'
+model lists, so it stops showing up in opencode. Removal only ever touches the
+two local LM Studio providers (`lmstudio_local_network`,
+`lmstudio_localhost`) — opencode entries from other providers are never touched.
+The loader config's `models` map is the source of truth: any model still listed
+there stays, even if it isn't currently watched.
+
+Restart opencode afterwards for the changes to apply.
+
+### Removing a model
+
+To fully drop a model (e.g. after deleting its download from LM Studio's
+directory), use the `remove` command:
+
+- Pick the model from the numbered menu, or pass its number directly
+  (`remove 2`).
+- Confirm when asked. The model's load config (and any presets) is deleted from
+  the loader's `model_configs.json`, any `opencode.models` override for it is
+  dropped, and the opencode sync runs again so its entry is pruned from both
+  local LM Studio providers' model lists.
+
+Alternatively, edit `model_configs.json` by hand and run `sync-opencode` — the
+same pruning applies the next time the sync runs.
 
 An optional top-level `opencode` section overrides per-model sync fields:
 

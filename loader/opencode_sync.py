@@ -7,10 +7,13 @@ each model's context window and reasoning capability.
 
 Models already present are updated in place. Models that are watched in the
 loader but missing from any provider are added to that provider's model list.
+Models present in a provider but no longer managed by the loader are removed,
+so a model deleted from the loader's config doesn't linger in opencode.
 """
 
 import json
 import os
+import re
 
 DEFAULT_CONFIG_PATH = os.path.expanduser("~/.config/opencode/opencode.jsonc")
 PROVIDERS = ["lmstudio_local_network", "lmstudio_localhost"]
@@ -182,13 +185,130 @@ def _build_entry(name, context, reasoning, output, modalities=None, attachment=N
     return entry
 
 
-def sync(config_path, watched_desired, overrides=None, providers=None):
+def _top_level_keys(text, obj_start, obj_end):
+    """Yield ``(key_start_colon, key, val_start, val_end)`` for the immediate
+    children of an object at ``obj_start`` (the ``{``).
+
+    Walks the object with brace-depth tracking, skipping strings and comments,
+    and only reports keys whose ``:`` value is itself an object. Nested keys
+    (e.g. ``limit.context``) are not reported.
+    """
+    i = obj_start + 1
+    depth = 0
+    n = len(text)
+    while i < obj_end:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n:
+                ch = text[j]
+                if ch == "\\":
+                    j += 2
+                    continue
+                if ch == '"':
+                    break
+                j += 1
+            key_token_end = j + 1
+            colon = _skip_ws(text, key_token_end)
+            if depth == 0 and colon < obj_end and text[colon] == ":":
+                vs, ve = _value_span(text, colon)
+                if vs is not None and text[vs] == "{":
+                    yield (colon, text[i + 1:j], vs, ve)
+            i = key_token_end
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] in "/*":
+            if text[i + 1] == "/":
+                j2 = text.find("\n", i)
+                i = len(text) if j2 < 0 else j2 + 1
+                continue
+            j2 = text.find("*/", i + 2)
+            i = len(text) if j2 < 0 else j2 + 2
+            continue
+        if c in "{[":
+            depth += 1
+        elif c in "}]":
+            depth -= 1
+        i += 1
+
+
+def _remove_edits(text, mobj_start, mobj_end, keep):
+    """Return ``(edits, removed_keys)`` for model entries not in ``keep``.
+
+    Scans the provider ``models`` object span for its direct model keys. An
+    entry whose key is not in ``keep`` (a model the loader no longer manages)
+    is deleted together with its trailing comma, preserving surrounding JSONC
+    comments and formatting. ``keep`` is the set of model keys that must stay.
+    ``edits`` are ``(start, end, "")`` specs; ``removed_keys`` lists the keys
+    that were dropped.
+    """
+    edits = []
+    removed_keys = []
+    for colon, key, vstart, vend in _top_level_keys(text, mobj_start, mobj_end):
+        if key in keep:
+            continue
+        line_start = text.rfind("\n", 0, colon) + 1
+        # Does this entry have a trailing comma after its closing brace?
+        after = text[vend:]
+        if re.match(r"[ \t]*,\n", after):
+            # remove the entry plus its trailing comma + newline
+            end = vend + re.match(r"[ \t]*,\n", after).end()
+            start = line_start
+        else:
+            # no trailing comma -> this was the last member. Its separator
+            # comma is the previous member's trailing comma; walk left across
+            # whitespace/newline to swallow it along with the whole line.
+            end = vend
+            if text[vend:].startswith("\n"):
+                end = vend + 1
+            j = line_start - 1
+            while j > mobj_start and text[j] in " \t\r\n":
+                j -= 1
+            start = j if text[j] == "," else line_start
+        edits.append((start, end, ""))
+        removed_keys.append((key, start))
+    return edits, removed_keys
+
+
+def _models_span(text, provider):
+    """Return ``(mkey, mobj_start, mobj_end)`` for a provider's ``models`` object."""
+    root = _find_key(text, "provider", 0, len(text))
+    if root is None:
+        return None, None, None
+    pstart, pend = _value_span(text, root)
+    if pstart is None:
+        return None, None, None
+    pkey = _find_key(text, provider, pstart, pend)
+    if pkey is None:
+        return None, None, None
+    pobj_start, pobj_end = _value_span(text, pkey)
+    if pobj_start is None:
+        return None, None, None
+    mkey = _find_key(text, "models", pobj_start, pobj_end)
+    if mkey is None:
+        return None, None, None
+    mobj_start, mobj_end = _value_span(text, mkey)
+    if mobj_start is None:
+        return None, None, None
+    return mkey, mobj_start, mobj_end
+
+
+def _sync_key_indent(text, mkey):
+    key_line_start = text.rfind("\n", 0, mkey) + 1
+    return len(text[key_line_start:mkey]) - len(text[key_line_start:mkey].lstrip(" "))
+
+
+def sync(config_path, watched_desired, overrides=None, providers=None, remove_missing=None):
     """Update model entries in the opencode config.
 
     ``watched_desired``: ``{model_key: desired_load_config}`` (the loader's
     watched presets). ``overrides``: ``{model_key: {"reasoning": bool,
     "output": int, "vision": bool, "modalities": dict, "attachment": bool}}``
     from the config's optional ``opencode`` section.
+    ``remove_missing``: an iterable of model keys that are still managed by the
+    loader (source of truth). Any model entry in these providers' model lists
+    whose key is not among them is removed, so entries for models deleted from
+    the loader's config don't linger in opencode. When ``None`` (default),
+    nothing is removed.
 
     ``vision: true`` writes ``modalities: {input: [text, image], output: [text]}``
     plus ``attachment: true`` so opencode sends images to the model.
@@ -200,34 +320,39 @@ def sync(config_path, watched_desired, overrides=None, providers=None):
     Models already present are updated in place. Models not yet present are
     added to each provider that doesn't have them.
 
-    Returns ``(changed, added)`` where ``added`` lists ``(provider, model_key)``
-    tuples for models newly inserted.
+    Returns ``(changed, added, removed)`` where ``changed`` counts all edits,
+    ``added`` lists ``(provider, model_key)`` tuples for models newly inserted,
+    and ``removed`` lists ``(provider, model_key)`` tuples for models dropped
+    from the providers' model lists.
     """
     overrides = overrides or {}
     providers = providers or PROVIDERS
+    keep = set(remove_missing) if remove_missing is not None else None
+
     with open(config_path, "r", encoding="utf-8") as fh:
         text = fh.read()
 
-    edits = []
     added = []
+    removed = []
+    removal_edits = []
 
+    # Pass 1: remove stale model entries first, so later add/update edits
+    # (computed on the post-removal text) never collide with removal spans.
+    if keep is not None:
+        for provider in providers:
+            _, mobj_start, mobj_end = _models_span(text, provider)
+            if mobj_start is None:
+                continue
+            r_edits, r_keys = _remove_edits(text, mobj_start, mobj_end, keep)
+            removal_edits.extend(r_edits)
+            removed.extend((provider, key) for key, _ in r_keys)
+        for vstart, vend, rep in sorted(removal_edits, reverse=True):
+            text = text[:vstart] + rep + text[vend:]
+
+    # Pass 2: update / add watched models against the (possibly reduced) text.
+    edits = []
     for provider in providers:
-        root = _find_key(text, "provider", 0, len(text))
-        if root is None:
-            continue
-        pstart, pend = _value_span(text, root)
-        if pstart is None:
-            continue
-        pkey = _find_key(text, provider, pstart, pend)
-        if pkey is None:
-            continue
-        pobj_start, pobj_end = _value_span(text, pkey)
-        if pobj_start is None:
-            continue
-        mkey = _find_key(text, "models", pobj_start, pobj_end)
-        if mkey is None:
-            continue
-        mobj_start, mobj_end = _value_span(text, mkey)
+        mkey, mobj_start, mobj_end = _models_span(text, provider)
         if mobj_start is None:
             continue
         for model_key, desired in watched_desired.items():
@@ -272,8 +397,7 @@ def sync(config_path, watched_desired, overrides=None, providers=None):
             )
             inner = text[mobj_start + 1:mobj_end - 1].rstrip()
             has_entries = bool(inner.strip())
-            key_line_start = text.rfind("\n", 0, mkey) + 1
-            key_indent = len(text[key_line_start:mkey]) - len(text[key_line_start:mkey].lstrip(" "))
+            key_indent = _sync_key_indent(text, mkey)
             entry_indent = key_indent + 2
             rendered = _render(entry, entry_indent)
             entry_line = " " * entry_indent + json.dumps(model_key) + ": " + rendered
@@ -291,4 +415,4 @@ def sync(config_path, watched_desired, overrides=None, providers=None):
         text = text[:vstart] + rep + text[vend:]
     with open(config_path, "w", encoding="utf-8") as fh:
         fh.write(text)
-    return len(edits), added
+    return len(edits) + len(removal_edits), added, removed
