@@ -75,6 +75,7 @@ class RemoveModelTest(unittest.TestCase):
     def test_cmd_remove_with_index_confirmed(self):
         app = self._app()
         with mock.patch("loader.dynamic_model_loader.sync", return_value=(0, [], [])) as mock_sync, \
+             mock.patch("loader.dynamic_model_loader._discover_wsl_targets", return_value=[]), \
              mock.patch("builtins.input", return_value="y"):
             res = app.cmd_remove(["1"])
         self.assertTrue(res)
@@ -86,6 +87,7 @@ class RemoveModelTest(unittest.TestCase):
         app = self._app()
         # no index -> menu shown via input(); select 1 then confirm
         with mock.patch("loader.dynamic_model_loader.sync", return_value=(0, [], [])) as mock_sync, \
+             mock.patch("loader.dynamic_model_loader._discover_wsl_targets", return_value=[]), \
              mock.patch("builtins.input", side_effect=["1", "y"]):
             res = app.cmd_remove([])
         self.assertTrue(res)

@@ -15,7 +15,9 @@ import json
 import os
 import re
 
-DEFAULT_CONFIG_PATH = os.path.expanduser("~/.config/opencode/opencode.jsonc")
+from loader import runtime
+
+DEFAULT_CONFIG_PATH = runtime.local_opencode_config()
 PROVIDERS = ["lmstudio_local_network", "lmstudio_localhost"]
 
 _UNESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/"}
@@ -416,3 +418,18 @@ def sync(config_path, watched_desired, overrides=None, providers=None, remove_mi
     with open(config_path, "w", encoding="utf-8") as fh:
         fh.write(text)
     return len(edits) + len(removal_edits), added, removed
+
+
+def has_lmstudio_providers(config_path, providers=None):
+    """Return True when any of ``providers`` declares a ``models`` object.
+
+    Used to distinguish an up-to-date config (nothing to sync) from a config
+    that has no LM Studio provider at all (the models are not exposed there).
+    """
+    providers = providers or PROVIDERS
+    try:
+        with open(config_path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return False
+    return any(_models_span(text, provider)[1] is not None for provider in providers)

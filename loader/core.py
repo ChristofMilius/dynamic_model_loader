@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 import lmstudio as lms
 
+from loader import runtime
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(BASE_DIR)
 LOG_FILE = os.path.join(PROJECT_DIR, "dynamic_loader.log")
@@ -436,22 +438,23 @@ class LMStudio:
 
     def __init__(self, api_token=None):
         self._api_token = api_token or os.environ.get("LM_API_TOKEN")
+        self._api_host = runtime.lmstudio_api_host()
 
     @contextlib.contextmanager
     def connect(self):
-        with lms.Client(api_token=self._api_token) as client:
+        with lms.Client(api_host=self._api_host, api_token=self._api_token) as client:
             yield client
 
     def load(self, model_key, config):
-        with lms.Client(api_token=self._api_token) as client:
+        with lms.Client(api_host=self._api_host, api_token=self._api_token) as client:
             return client.llm.load_new_instance(model_key, config=config).identifier
 
     def unload(self, identifier):
-        with lms.Client(api_token=self._api_token) as client:
+        with lms.Client(api_host=self._api_host, api_token=self._api_token) as client:
             client.llm.unload(identifier)
 
     def list_loaded(self):
-        with lms.Client(api_token=self._api_token) as client:
+        with lms.Client(api_host=self._api_host, api_token=self._api_token) as client:
             rows = []
             for h in client.llm.list_loaded():
                 try:
@@ -462,7 +465,7 @@ class LMStudio:
             return rows
 
     def list_downloaded(self):
-        with lms.Client(api_token=self._api_token) as client:
+        with lms.Client(api_host=self._api_host, api_token=self._api_token) as client:
             rows = []
             for m in client.llm.list_downloaded():
                 try:

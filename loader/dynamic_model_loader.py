@@ -11,13 +11,21 @@ A unified interactive CLI combining model loading and configuration management:
   running, and quit.
 """
 
+import contextlib
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 
+from loader import runtime, wsl_targets as wsl
 from loader.core import ConfigStore, LMStudio, log_action
-from loader.opencode_sync import DEFAULT_CONFIG_PATH, PROVIDERS, sync
+from loader.opencode_sync import (
+    DEFAULT_CONFIG_PATH,
+    PROVIDERS,
+    has_lmstudio_providers,
+    sync,
+)
 from loader.watcher import Watcher
 
 
@@ -50,6 +58,56 @@ OPENCODE_WARNING = (
     "  Install opencode (https://opencode.ai/) or add its executable directory\n"
     "  to PATH, otherwise the 'opencode' menu command cannot launch it."
 )
+
+
+def _discover_wsl_targets():
+    """Discover WSL opencode config targets; never raises.
+
+    Cross-distro management is a Windows-loader feature. When the loader runs
+    inside WSL it manages only its own config (the WSL targets' UNC paths are
+    not reachable from there anyway).
+    """
+    if runtime.detect() is not runtime.RuntimeKind.WINDOWS:
+        return []
+    try:
+        return wsl.discover()
+    except Exception:
+        return []
+
+
+def _sync_wsl_target(target, watched, overrides, keep):
+    """Apply the opencode sync to one WSL distro's config.
+
+    Prefers direct ``\\wsl$`` file access. When the share is unavailable the
+    edited text is transported through ``wsl`` commands instead. Returns
+    ``(changed, added, removed, error)`` with ``error=None`` on success.
+    """
+    try:
+        changed, added, removed = sync(
+            target.unc_config, watched, overrides, remove_missing=keep
+        )
+        return changed, added, removed, None
+    except OSError:
+        pass
+    try:
+        text = wsl.read_config_via_wsl(target)
+        fd, tmp = tempfile.mkstemp(suffix=".jsonc")
+        os.close(fd)
+        try:
+            with open(tmp, "w", encoding="utf-8", newline="") as fh:
+                fh.write(text)
+            changed, added, removed = sync(
+                tmp, watched, overrides, remove_missing=keep
+            )
+            with open(tmp, "r", encoding="utf-8", newline="") as fh:
+                updated = fh.read()
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+        wsl.write_config_via_wsl(target, updated)
+        return changed, added, removed, None
+    except Exception as e:
+        return 0, [], [], str(e)
 
 
 class Menu:
@@ -105,6 +163,7 @@ class CommandDispatcher:
             "sync-opencode": {"handler": app.cmd_sync_opencode, "help": "update opencode's LM Studio model lists with the watched presets' context limits"},
             "unload": {"handler": app.cmd_unload, "help": "unload a loaded instance; 'unload N' selects instance N directly"},
             "watch": {"handler": app.cmd_watch, "help": "watch start | stop | status"},
+            "wsl": {"handler": app.cmd_wsl, "help": "inspect WSL opencode targets; 'wsl list' or 'wsl sync'"},
         }
 
     def dispatch(self, line):
@@ -416,7 +475,12 @@ class DynamicModelLoader:
         return True
 
     def _sync_opencode(self, verbose=True):
-        """Run the opencode provider sync; returns True on success."""
+        """Run the opencode provider sync; returns True on success.
+
+        Syncs the Windows opencode config first, then each reachable WSL
+        distro's own config, so the same model restrictions apply wherever
+        opencode runs (native CLI and WSL instances on mounted drives).
+        """
         watched = self.config_store.watch_desired()
         overrides = self.config_store.raw.get("opencode", {}).get("models", {})
         if not isinstance(overrides, dict):
@@ -469,14 +533,70 @@ class DynamicModelLoader:
                 print(f"  added new model: {key}")
             for _, key in removed:
                 print(f"  removed stale model: {key}")
-            print("Restart opencode for the changes to take effect.")
         elif removed or added:
             for _, key in removed:
                 print(f"  removed {key} from opencode")
-        return True
+
+        ok = True
+        for target in _discover_wsl_targets():
+            if not target.config_exists:
+                if verbose:
+                    print(f"WSL {target.distro}: no opencode config at {target.unc_config}; skipped")
+                continue
+            tchanged, tadded, tremoved, terr = _sync_wsl_target(
+                target, watched, enriched, list(self.config_store.data)
+            )
+            if terr:
+                ok = False
+                print(f"WSL {target.distro}: sync failed: {terr}")
+                continue
+            if verbose:
+                net = f" ({target.networking})" if target.networking else ""
+                print(f"Synced {tchanged} model(s) into WSL {target.distro}{net}: {target.unc_config}")
+                if (
+                    tchanged == 0
+                    and not tadded
+                    and not tremoved
+                    and not has_lmstudio_providers(target.unc_config)
+                ):
+                    print("  note: no lmstudio_localhost/lmstudio_local_network provider in this config; models are not exposed there")
+                for _, key in tadded:
+                    print(f"  added new model: {key}")
+                for _, key in tremoved:
+                    print(f"  removed stale model: {key}")
+            elif tremoved or tadded:
+                for _, key in tremoved:
+                    print(f"  removed {key} from WSL {target.distro}")
+        if verbose:
+            print("Restart opencode (Windows and each WSL instance) for the changes to take effect.")
+        return ok
 
     def cmd_sync_opencode(self, args):
         return self._sync_opencode(verbose=True)
+
+    def cmd_wsl(self, args):
+        if runtime.detect() is not runtime.RuntimeKind.WINDOWS:
+            print("WSL cross-distro targets are managed by the Windows loader only.")
+            print("Running inside WSL, sync-opencode edits this distro's own config.")
+            return True
+        sub = args[0].lower() if args else "list"
+        if sub == "sync":
+            return self._sync_opencode(verbose=True)
+        if sub != "list":
+            print("Usage: wsl list | wsl sync")
+            return True
+        targets = _discover_wsl_targets()
+        if not targets:
+            print("No WSL targets discovered (wsl.exe missing, or no distro with a resolvable home).")
+            return True
+        print(f"WSL opencode targets ({len(targets)}):")
+        for t in targets:
+            exists = "yes" if t.config_exists else "no"
+            print(f"  {t.distro}")
+            print(f"    home:       {t.home}")
+            print(f"    networking: {t.networking or 'unknown'}")
+            print(f"    config:     {t.unc_config}  (exists: {exists})")
+        return True
 
     def cmd_reload(self, args):
         self.config_store.reload()
@@ -570,6 +690,8 @@ class DynamicModelLoader:
 
     def run(self):
         print("dynamic model loader")
+        kind = runtime.detect().value
+        print(f"runtime: {kind} | LM Studio endpoint: {runtime.lmstudio_api_host() or 'auto'}")
         for w in self.config_store.warnings():
             print(f"warning: {w}")
         if not resolve_opencode():
@@ -579,6 +701,8 @@ class DynamicModelLoader:
             print("Known load presets:")
             for i, p in enumerate(presets, 1):
                 print(f"  {i:>3}. {p.label}")
+        for t in _discover_wsl_targets():
+            print(f"WSL opencode target: {t.distro} ({t.networking or 'networking n/a'})")
         print("Type 'help' for the command list.")
         while True:
             try:

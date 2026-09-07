@@ -25,6 +25,7 @@ the watcher module (`watcher.py`), which runs as a background daemon thread.
 | `loader/dynamic_model_loader.py` | The app: interactive CLI. Commands are dispatched through a command dictionary. |
 | `loader/watcher.py` | `Watcher`: configuration watcher — background daemon thread (scan / settle / fix / backoff). No stdout; state read via `status()`. |
 | `loader/core.py` | Shared: unified `ConfigStore` + `Preset`, load-config matching, `LMStudio` SDK wrapper, action log. |
+| `loader/wsl_targets.py` | Discovery + transport for opencode configs inside WSL distros (`\\wsl$` UNC primary, `wsl` command fallback). |
 | `loader/model_configs.json` | The unified config file: models, named load presets, and which preset the watcher enforces. |
 
 ---
@@ -50,11 +51,34 @@ the prompt:
 
 ```
 dynamic model loader
+runtime: windows | LM Studio endpoint: auto
 Known load presets:
     1. mistralai/devstral-small-2-2512  [full-context, ctx=65536]
 Type 'help' for the command list.
 dynamic-loader>
 ```
+
+### Supported environments
+
+The loader detects where it is running and adapts two things: which LM Studio
+server it connects to, and which opencode config it edits (see `sync-opencode`
+below).
+
+| Run inside | LM Studio endpoint | opencode config edited |
+|---|---|---|
+| Windows | local LM Studio (auto) | `<home>\.config\opencode\opencode.jsonc` |
+| WSL, mirrored networking | `127.0.0.1:1234` (Windows-host LMS) | the distro's own config |
+| WSL, NAT networking | the WSL gateway IP `:1234` (Windows-host LMS) | the distro's own config |
+| Linux (native) | local LM Studio (auto) | `~/.config/opencode/opencode.jsonc` (XDG-aware) |
+
+The startup banner reports the detected runtime and endpoint. Cross-distro WSL
+target management (`wsl list` / WSL sync in `sync-opencode`) is a **Windows**
+loader feature; when the loader runs inside WSL it manages only its own config.
+
+Override the endpoint explicitly with `LM_BASE_URL` (or `LMSTUDIO_BASE_URL`),
+e.g. when LM Studio runs on another machine on your LAN. The value may be a
+bare host, `host:port`, or a full `http://host:1234/v1` URL — the loader
+normalizes it down to `host:port`.
 
 ## Commands
 
@@ -72,7 +96,9 @@ dynamic-loader>
 | `watch stop` | Stop the watcher. |
 | `watch status` | Show watcher state, last scan and last fix. |
 | `opencode [args]` | Launch opencode (native CLI) in a separate window, passing args; the launcher stays responsive while opencode runs. |
-| `sync-opencode` | Update opencode's LM Studio model lists (`~/.config/opencode/opencode.jsonc`) with the watched presets' context limits. |
+| `sync-opencode` | Update opencode's LM Studio model lists with the watched presets' context limits — in the Windows config (`~/.config/opencode/opencode.jsonc`) and in every reachable WSL distro's own config. |
+| `wsl list` | Discover WSL opencode targets: distro, home, networking mode, and the `\\wsl$` config path. |
+| `wsl sync` | Shortcut for `sync-opencode`. |
 | `status` | Connection summary + configured/loaded overlap + watcher state. |
 | `reload` | Re-read `model_configs.json` (applies to menu and running watcher). |
 | `quit` | Stop the watcher and exit (also `exit`/`q`/Ctrl+C). |
@@ -135,7 +161,7 @@ Example format:
 - **Preset fields** use the same names LM Studio's SDK uses; anything in a
   preset dict is passed straight to the SDK as the load config.
 
-### `sync-opencode` and the `opencode` section
+### `sync-opencode`, the `opencode` section, and WSL targets
 
 `sync-opencode` edits the opencode global config
 (`~/.config/opencode/opencode.jsonc`) so opencode knows the context sizes of the
@@ -145,16 +171,41 @@ models it offers. For each model the watcher enforces (a model with
 in the opencode config are updated in place. Models not yet present are added to
 each provider's model list.
 
+The same model restrictions are applied to opencode running **inside WSL**.
+Each WSL distro keeps its own global config
+(`~/.config/opencode/opencode.jsonc` on the Linux filesystem), and the loader
+writes the identical model entries into every reachable distro over the
+`\\wsl$\<distro>\...` share (with a `wsl`-command fallback when the share is not
+mounted). This makes the model limits apply to the opencode instances that work
+on the Windows drives mounted into WSL. Prerequisites:
+
+- **Mirrored WSL networking** (`networkingMode=mirrored` in `.wslconfig`) so
+  WSL's `localhost` reaches LM Studio on Windows. The loader's
+  `lmstudio_localhost` provider already points at `127.0.0.1:1234` and works
+  unchanged in mirrored mode.
+- The distro must be **running** (start it before `sync-opencode`, e.g. by
+  launching opencode there) so its config is reachable from Windows.
+- The distro's config must contain the LM Studio providers
+  (`lmstudio_local_network` / `lmstudio_localhost`), otherwise the loader prints
+  a note and leaves it untouched.
+
+`wsl list` shows the discovered targets (distro, home, networking mode, config
+path). Internal infrastructure distros (Docker Desktop's `docker-desktop` /
+`docker-desktop-data`) are filtered out entirely. A real distro without an
+opencode config yet is listed but skipped by the sync.
+
 `sync-opencode` also prunes stale entries. A model that is no longer in the
 loader's `models` config (for example after you delete its download from LM
 Studio and drop its load config) is removed from both local LM Studio providers'
-model lists, so it stops showing up in opencode. Removal only ever touches the
+model lists, so it stops showing up in opencode. This pruning applies to the
+Windows config and every WSL target alike. Removal only ever touches the
 two local LM Studio providers (`lmstudio_local_network`,
 `lmstudio_localhost`) — opencode entries from other providers are never touched.
 The loader config's `models` map is the source of truth: any model still listed
 there stays, even if it isn't currently watched.
 
-Restart opencode afterwards for the changes to apply.
+Restart opencode (Windows and each WSL instance) afterwards for the changes to
+apply.
 
 ### Removing a model
 
