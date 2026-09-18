@@ -317,8 +317,13 @@ The plugin:
 - Merges consecutive user messages into one
 - Logs metadata (role, part count, tools) to `<tmpdir>/opencode/msg_normalize.log`
 
-The plugin is auto-loaded by opencode from the project's `.opencode/plugins/`
-directory — no manual installation required.
+The repo copy is the committed source of truth. Because the loader is used
+across all projects, the plugin **self-replicates**: the first time opencode
+loads it from the repo's `.opencode/plugins/`, it copies itself into the
+global plugins folder (`~/.config/opencode/plugins/`), covering sessions in
+every project from then on. The global copy is byte-identical and inert on
+the replication side (it never copies back). If you edit the plugin, push the
+repo copy; the next repo-session load refreshes the global replica.
 
 ## Dependencies
 
