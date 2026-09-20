@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from loader.capabilities import (
     DEFAULT_REASONING_EFFORT,
     available_parameters,
+    default_reasoning_effort,
 )
 from loader.core import ConfigStore
 
@@ -99,6 +100,24 @@ class AvailableParametersTest(unittest.TestCase):
     def test_default_effort_is_medium(self):
         self.assertEqual(DEFAULT_REASONING_EFFORT, "medium")
 
+    def test_binary_off_on_capability_defaults_effort_to_none(self):
+        for allowed in (["off", "on"], ("off", "on"), ["off", "on", "on"]):
+            self.assertEqual(
+                default_reasoning_effort({"allowedOptions": allowed, "default": "on"}),
+                "none",
+            )
+
+    def test_effort_level_capability_defaults_effort_to_medium(self):
+        cap = {"allowedOptions": ["off", "low", "medium", "xhigh", "on"], "default": "xhigh"}
+        self.assertEqual(default_reasoning_effort(cap), "medium")
+
+    def test_bool_capability_defaults_effort_to_medium(self):
+        self.assertEqual(default_reasoning_effort(True), "medium")
+
+    def test_capability_without_options_defaults_effort_to_medium(self):
+        self.assertEqual(default_reasoning_effort({"default": "on"}), "medium")
+        self.assertEqual(default_reasoning_effort({}), "medium")
+
 
 class ImportMergeTest(unittest.TestCase):
     def setUp(self):
@@ -144,6 +163,17 @@ class ImportMergeTest(unittest.TestCase):
         cfg = app.config_store._preset_config("qwen/qwen3.8-27b", "imported")
         self.assertNotIn("reasoningEffort", cfg)
         self.assertNotIn("reasoning", cfg)
+
+    def test_cmd_import_binary_reasoning_defaults_effort_to_none(self):
+        app = self._app()
+        probe = _probe(v1=dict(V1_LEG, reasoning={"allowed_options": ["off", "on"], "default": "on"}))
+        with mock.patch("loader.capabilities.probe_all", return_value=probe), \
+             mock.patch("builtins.input", side_effect=["1", "", "n"]):
+            res = app.cmd_import([])
+        self.assertTrue(res)
+        cfg = app.config_store._preset_config("qwen/qwen3.8-27b", "imported")
+        self.assertEqual(cfg["reasoningEffort"], "none")
+        self.assertEqual(cfg["reasoning"]["allowedOptions"], ["off", "on"])
 
 
 if __name__ == "__main__":

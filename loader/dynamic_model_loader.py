@@ -720,10 +720,15 @@ class DynamicModelLoader:
 
         The actual running config wins over probed metadata on overlap. When
         the probe shows the model supports reasoning, a ``reasoningEffort``
-        default (``medium``) is added unless the preset already picks one.
+        default is added unless the preset already picks one: ``medium`` for
+        models with real effort levels, ``none`` for binary on/off models (the
+        gemma-4 family) whose thinking otherwise burns the whole reply budget.
         """
         try:
-            from loader.capabilities import DEFAULT_REASONING_EFFORT, available_parameters
+            from loader.capabilities import (
+                available_parameters,
+                default_reasoning_effort,
+            )
 
             params = available_parameters(probe)
         except Exception:
@@ -731,8 +736,9 @@ class DynamicModelLoader:
         if not params:
             return config
         aug = {**params, **config}
-        if params.get("reasoning"):
-            aug.setdefault("reasoningEffort", DEFAULT_REASONING_EFFORT)
+        reasoning = params.get("reasoning")
+        if reasoning:
+            aug.setdefault("reasoningEffort", default_reasoning_effort(reasoning))
             print(f"  -> saved {len(params)} probe parameter fields, reasoningEffort={aug['reasoningEffort']!r}")
         else:
             print(f"  -> saved {len(params)} probe parameter fields (model has no reasoning support)")

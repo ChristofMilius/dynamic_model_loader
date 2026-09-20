@@ -200,10 +200,16 @@ records not only the load settings but the model's own spec, for example:
 }
 ```
 
-- **`reasoningEffort`** — intended reasoning-effort default. Import sets it to
-  `medium` for any model that supports reasoning, unless the preset already
-  picks an effort. Edit it to any of the model's `allowedOptions` (e.g.
-  `off`, `low`, `high`, `on`).
+- **`reasoningEffort`** — intended reasoning-effort default. Import picks it
+  from the probed capability: `medium` for models with real effort levels,
+  `none` for models that only report the binary `off`/`on` switch (the gemma-4
+  family) — on those, every effort above `none` spends the whole token budget
+  thinking and returns no reply, so `none` is the only value that reliably
+  forces a direct answer. The default is only applied when the preset does not
+  already pick an effort. Edit it to any LM Studio chat `reasoning_effort`
+  value (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) — note this is a
+  different namespace than the model's binary `allowedOptions` (`off`/`on`),
+  which the chat endpoint rejects.
 
 ### `sync-opencode`, the `opencode` section, and WSL targets
 
@@ -251,6 +257,26 @@ there stays, even if it isn't currently watched.
 Restart opencode (Windows and each WSL instance) afterwards for the changes to
 apply.
 
+For reasoning models, the synced entry additionally carries an `options` block
+with the model's `reasoningEffort`:
+
+```jsonc
+"google/gemma-4-12b-qat": {
+  "name": "gemma-4-12b-qat",
+  "reasoning": true,
+  "options": { "reasoningEffort": "none" },
+  "limit": { "context": 65536, "input": 65536, "output": 16384 }
+}
+```
+
+opencode forwards this per-model `options` into the request body as
+`reasoning_effort` (verified end-to-end: config → AI SDK
+`@ai-sdk/openai-compatible` → `reasoning_effort` → enforced by LM Studio). The
+value is resolved per model: an explicit `opencode.models.<key>.reasoningEffort`
+override wins, then binary `off`/`on` models (the gemma-4 family) get `none`
+so their thinking cannot burn the whole reply budget, and effort-level models
+keep their preset's `reasoningEffort` (default `medium`).
+
 ### Removing a model
 
 To fully drop a model (e.g. after deleting its download from LM Studio's
@@ -285,7 +311,11 @@ An optional top-level `opencode` section overrides per-model sync fields:
   context/4 default.
 - **`reasoning`** — write `"reasoning": true` on the model entry. Without an
   override, it is inferred from the model key (enabled when the key contains
-  `reasoning`).
+  `reasoning`) or from a probed reasoning capability stored in the watched
+  preset.
+- **`reasoningEffort`** — force the `options.reasoningEffort` written for this
+  model, overriding both the preset default and the binary-`none` behavior for
+  the gemma-4 family. Any LM Studio chat `reasoning_effort` value.
 - **`vision`** — write `"vision": true` to enable image input
   (`modalities: {input: [text, image], output: [text]}` plus
   `"attachment": true`) so opencode sends images to the model.

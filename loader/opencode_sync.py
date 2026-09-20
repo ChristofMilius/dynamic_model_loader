@@ -3,7 +3,9 @@
 The opencode global config (``~/.config/opencode/opencode.jsonc``) declares the
 LM Studio providers' model lists with only a ``name``. This module edits those
 entries in place — preserving JSONC comments and formatting — so opencode knows
-each model's context window and reasoning capability.
+each model's context window, reasoning capability, and the reasoning effort
+``options`` to send on every request (``options.reasoningEffort``, serialized
+by the AI SDK into the ``reasoning_effort`` request-body field).
 
 Models already present are updated in place. Models that are watched in the
 loader but missing from any provider are added to that provider's model list.
@@ -16,6 +18,7 @@ import os
 import re
 
 from loader import runtime
+from loader.capabilities import DEFAULT_REASONING_EFFORT, default_reasoning_effort
 
 DEFAULT_CONFIG_PATH = runtime.local_opencode_config()
 PROVIDERS = ["lmstudio_local_network", "lmstudio_localhost"]
@@ -172,10 +175,12 @@ def _render(entry, key_indent):
     return "\n".join(lines)
 
 
-def _build_entry(name, context, reasoning, output, modalities=None, attachment=None):
+def _build_entry(name, context, reasoning, output, modalities=None, attachment=None, options=None):
     entry = {"name": name}
     if reasoning:
         entry["reasoning"] = True
+    if options:
+        entry["options"] = options
     if modalities:
         entry["modalities"] = modalities
     if attachment is True:
@@ -185,6 +190,28 @@ def _build_entry(name, context, reasoning, output, modalities=None, attachment=N
         limit["output"] = output or max(1024, context // 4)
         entry["limit"] = limit
     return entry
+
+
+def _resolve_reasoning_effort(desired, ov, reasoning):
+    """Pick the ``options.reasoningEffort`` written into an opencode entry.
+
+    Returns ``None`` for models not marked as reasoning models (no ``options``
+    block is emitted). For a reasoning model the resolution order is: an
+    explicit ``opencode`` override wins; otherwise the model's stored reasoning
+    capability decides — a binary on/off model (the gemma-4 family) gets
+    ``"none"`` so thinking cannot burn the whole reply budget, an effort-level
+    model keeps its preset's ``reasoningEffort`` or falls back to
+    ``DEFAULT_REASONING_EFFORT`` (``medium``).
+    """
+    if not reasoning:
+        return None
+    effort = ov.get("reasoningEffort")
+    if effort is not None:
+        return effort
+    cap = desired.get("reasoning")
+    if isinstance(cap, dict) and default_reasoning_effort(cap) == "none":
+        return "none"
+    return desired.get("reasoningEffort") or DEFAULT_REASONING_EFFORT
 
 
 def _top_level_keys(text, obj_start, obj_end):
@@ -303,8 +330,15 @@ def sync(config_path, watched_desired, overrides=None, providers=None, remove_mi
     """Update model entries in the opencode config.
 
     ``watched_desired``: ``{model_key: desired_load_config}`` (the loader's
-    watched presets). ``overrides``: ``{model_key: {"reasoning": bool,
-    "output": int, "vision": bool, "modalities": dict, "attachment": bool}}``
+    watched presets). Each reasoning model entry carries
+    ``options.reasoningEffort`` — the effort sent on every request (see
+    ``_resolve_reasoning_effort``): binary on/off models (the gemma-4 family)
+    get ``none``, effort-level models their preset's ``reasoningEffort``
+    (default ``medium``).
+
+    ``overrides``: ``{model_key: {"reasoning": bool, "output": int,
+    "vision": bool, "modalities": dict, "attachment": bool,
+    "reasoningEffort": str}}``
     from the config's optional ``opencode`` section.
     ``remove_missing``: an iterable of model keys that are still managed by the
     loader (source of truth). Any model entry in these providers' model lists
@@ -366,7 +400,7 @@ def sync(config_path, watched_desired, overrides=None, providers=None, remove_mi
                     ov = overrides.get(model_key) or {}
                     reasoning = ov.get("reasoning")
                     if reasoning is None:
-                        reasoning = "reasoning" in model_key
+                        reasoning = bool(desired.get("reasoning")) or "reasoning" in model_key
                     existing = _existing_entry(text, vstart, vend)
                     name = _existing_name(text, vstart, vend) or model_key.rsplit("/", 1)[-1]
                     entry = _build_entry(
@@ -376,6 +410,9 @@ def sync(config_path, watched_desired, overrides=None, providers=None, remove_mi
                         ov.get("output"),
                         _resolve_modalities(ov, existing),
                         _resolve_attachment(ov, existing),
+                        {"reasoningEffort": _resolve_reasoning_effort(desired, ov, reasoning)}
+                        if reasoning
+                        else None,
                     )
                     key_line_start = text.rfind("\n", 0, mk) + 1
                     key_indent = len(text[key_line_start:mk]) - len(text[key_line_start:mk].lstrip(" "))
@@ -387,7 +424,7 @@ def sync(config_path, watched_desired, overrides=None, providers=None, remove_mi
             ov = overrides.get(model_key) or {}
             reasoning = ov.get("reasoning")
             if reasoning is None:
-                reasoning = "reasoning" in model_key
+                reasoning = bool(desired.get("reasoning")) or "reasoning" in model_key
             name = model_key.rsplit("/", 1)[-1]
             entry = _build_entry(
                 name,
@@ -396,6 +433,9 @@ def sync(config_path, watched_desired, overrides=None, providers=None, remove_mi
                 ov.get("output"),
                 _resolve_modalities(ov, {}),
                 _resolve_attachment(ov, {}),
+                {"reasoningEffort": _resolve_reasoning_effort(desired, ov, reasoning)}
+                if reasoning
+                else None,
             )
             inner = text[mobj_start + 1:mobj_end - 1].rstrip()
             has_entries = bool(inner.strip())

@@ -24,6 +24,29 @@ DEFAULT_BASES = ("http://localhost:1234", "http://127.0.0.1:1234")
 # supports reasoning and the preset does not already pick one.
 DEFAULT_REASONING_EFFORT = "medium"
 
+# The binary reasoning switch a model reports when it has no effort levels
+# (``allowed_options: ["off", "on"]``). On such models -- the gemma-4 family --
+# every chat ``reasoning_effort`` above ``none`` spends the whole token budget
+# thinking and returns no reply at all, so they default to ``none``.
+BINARY_REASONING_OPTIONS = ("off", "on")
+
+
+def default_reasoning_effort(reasoning):
+    """Pick the reasoning-effort default for a probed reasoning capability.
+
+    Models that only advertise a binary reasoning switch (``allowed_options``
+    is exactly the off/on pair, no effort levels) get ``"none"`` -- the only
+    value that reliably returns a direct answer instead of burning the budget
+    on thinking. Models that expose real effort levels keep
+    ``DEFAULT_REASONING_EFFORT`` (``medium``). A non-dict capability (a plain
+    ``True``) also keeps the default, since its options are unknown.
+    """
+    if isinstance(reasoning, dict):
+        allowed = reasoning.get("allowedOptions") or reasoning.get("allowed_options")
+        if allowed and all(opt in BINARY_REASONING_OPTIONS for opt in allowed):
+            return "none"
+    return DEFAULT_REASONING_EFFORT
+
 # leg key -> camelCase load-config key. Every field here is an "available
 # parameter" of the model; ``available_parameters`` collects them all.
 _PARAM_KEYS = (
