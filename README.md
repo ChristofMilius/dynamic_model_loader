@@ -90,7 +90,7 @@ normalizes it down to `host:port`.
 | `load [N]` | Numbered menu of known load presets → load via the SDK. |
 | `unload [N]` | Numbered menu of loaded instances → unload. |
 | `remove [N]` | Numbered menu of configured load presets (one entry per model) → delete a model's load config from the loader config, then prune its entry from opencode's LM Studio model lists. Prompts for confirmation first. |
-| `import [N]` | Import a loaded instance's current load config as a named preset (e.g. copy a well-tuned config already running in LM Studio). Prompts for a preset name and whether the watcher should enforce it. The preset attaches to the base model key (an instance suffix like `:2` is stripped); enabling the watcher replaces the model's previous watched preset. |
+| `import [N]` | Import a loaded instance's current load config as a named preset (e.g. copy a well-tuned config already running in LM Studio). Prompts for a preset name and whether the watcher should enforce it. The preset attaches to the base model key (an instance suffix like `:2` is stripped); enabling the watcher replaces the model's previous watched preset. Import probes the model first and merges every available parameter field into the saved preset (see "Probing model parameters" below). |
 | `presets` | Configured load presets, marking which are enforced by the watcher. |
 | `watch start` | Start the config watcher in the background. |
 | `watch stop` | Stop the watcher. |
@@ -100,6 +100,7 @@ normalizes it down to `host:port`.
 | `wsl list` | Discover WSL opencode targets: distro, home, networking mode, and the `\\wsl$` config path. |
 | `wsl sync` | Shortcut for `sync-opencode`. |
 | `status` | Connection summary + configured/loaded overlap + watcher state. |
+| `probe [key]` | Probe a model's capabilities across every local API exposure and print its full available parameter set (alias `capabilities`). See "Probing model parameters". |
 | `reload` | Re-read `model_configs.json` (applies to menu and running watcher). |
 | `quit` | Stop the watcher and exit (also `exit`/`q`/Ctrl+C). |
 
@@ -159,7 +160,50 @@ Example format:
   enforced: a model is watched by a single preset, and importing a watched
   preset replaces the previous one.
 - **Preset fields** use the same names LM Studio's SDK uses; anything in a
-  preset dict is passed straight to the SDK as the load config.
+  preset dict is passed straight to the SDK as the load config (extra keys the
+  SDK does not know are ignored by it, but kept in the config file — see
+  *Probing model parameters* below).
+
+### Probing model parameters
+
+The `probe` / `capabilities` command queries every local API exposure (LM
+Studio SDK, native `/api/v1/models` and `/api/v0/models`, OpenAI-compat
+`/v1/models`) and reports the full parameter set the model advertises:
+vision, tool use, max context, type, publisher, architecture, format,
+quantization, parameters, variants, and — for reasoning models — the allowed
+reasoning-effort options:
+
+```
+dynamic-loader> probe qwen/qwen3.8-27b
+Probing qwen/qwen3.8-27b ...
+  lmstudio/sdk: no bases
+  lmstudio/api/v1: http://localhost:1234/api/v1/models -> vision=True, tool_use=True, reasoning=off|low|medium|xhigh|on, type=llm
+  lmstudio/api/v0: no bases
+  openai/compat: no bases
+merged: vision=True (via None), tool_use=True, max_context=262144, reasoning=off|low|medium|xhigh|on
+available parameters:
+  architecture: qwen35
+  ...
+  reasoning: {'allowedOptions': ['off', 'low', 'medium', 'xhigh', 'on'], 'default': 'xhigh'}
+```
+
+`import` stores those fields in the model's load config as well. So a preset
+records not only the load settings but the model's own spec, for example:
+
+```json
+"full-context": {
+  "contextLength": 65536,
+  "reasoningEffort": "medium",
+  "reasoning": { "allowedOptions": ["off", "low", "medium", "xhigh", "on"], "default": "xhigh" },
+  "vision": true,
+  "architecture": "qwen35"
+}
+```
+
+- **`reasoningEffort`** — intended reasoning-effort default. Import sets it to
+  `medium` for any model that supports reasoning, unless the preset already
+  picks an effort. Edit it to any of the model's `allowedOptions` (e.g.
+  `off`, `low`, `high`, `on`).
 
 ### `sync-opencode`, the `opencode` section, and WSL targets
 

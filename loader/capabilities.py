@@ -2,12 +2,16 @@
 
 Order (most chatty first):
   1. LM Studio SDK ``list_downloaded`` -> ``info.vision`` / ``trained_for_tool_use``
-  2. Native ``GET /api/v1/models`` -> ``capabilities.vision``
+  2. Native ``GET /api/v1/models`` -> ``capabilities.vision`` / ``capabilities.reasoning``
   3. Native ``GET /api/v0/models`` -> ``type: vlm`` means vision
   4. OpenAI-compat ``GET /v1/models`` -> exposure only, no capas
 
 ``probe_all`` never raises: each leg returns ``ok`` data or an ``error``
-string, and ``merged`` holds the best-effort vision/tool verdict.
+string, and ``merged`` holds the best-effort vision / tool / reasoning /
+max-context verdict. ``available_parameters`` extracts every parameter field
+the model reports — reasoning options, architecture, quantization, variants
+and more — so a load config can carry the full model spec with a reasoning
+effort default (``DEFAULT_REASONING_EFFORT``).
 """
 
 import json
@@ -15,6 +19,29 @@ import os
 import urllib.request
 
 DEFAULT_BASES = ("http://localhost:1234", "http://127.0.0.1:1234")
+
+# Reasoning effort applied to a model load config when the probed model
+# supports reasoning and the preset does not already pick one.
+DEFAULT_REASONING_EFFORT = "medium"
+
+# leg key -> camelCase load-config key. Every field here is an "available
+# parameter" of the model; ``available_parameters`` collects them all.
+_PARAM_KEYS = (
+    ("vision", "vision"),
+    ("tool_use", "toolUse"),
+    ("reasoning", "reasoning"),
+    ("max_context", "maxContextLength"),
+    ("type", "type"),
+    ("publisher", "publisher"),
+    ("architecture", "architecture"),
+    ("format", "format"),
+    ("params_string", "paramsString"),
+    ("display_name", "displayName"),
+    ("quantization", "quantization"),
+    ("size_bytes", "sizeBytes"),
+    ("variants", "variants"),
+    ("selected_variant", "selectedVariant"),
+)
 
 
 def discover_bases(extra=None):
@@ -74,8 +101,14 @@ def probe_sdk(model_key, api_token=None):
                         "source": "lmstudio-sdk:list_downloaded",
                         "vision": bool(getattr(info, "vision", False)),
                         "tool_use": bool(getattr(info, "trained_for_tool_use", False)),
+                        "reasoning": getattr(info, "reasoning", None),
                         "max_context": getattr(info, "max_context_length", None),
-                        "arch": getattr(info, "architecture", None),
+                        "type": getattr(info, "type", None),
+                        "architecture": getattr(info, "architecture", None),
+                        "format": getattr(info, "format", None),
+                        "params_string": getattr(info, "params_string", None),
+                        "display_name": getattr(info, "display_name", None),
+                        "size_bytes": getattr(info, "size_bytes", None),
                     }
         return {"ok": False, "error": f"not in list_downloaded: {model_key}"}
     except Exception as e:
@@ -83,7 +116,7 @@ def probe_sdk(model_key, api_token=None):
 
 
 def probe_lmstudio_v1(model_key, bases=None, api_token=None, timeout=5):
-    """Probe native GET /api/v1/models (capabilities.vision)."""
+    """Probe native GET /api/v1/models (full parameter set + capabilities)."""
     last_err = "no bases"
     for base in bases or discover_bases():
         try:
@@ -97,8 +130,18 @@ def probe_lmstudio_v1(model_key, bases=None, api_token=None, timeout=5):
                         "source": f"{base}/api/v1/models",
                         "vision": caps.get("vision"),
                         "tool_use": caps.get("trained_for_tool_use"),
+                        "reasoning": caps.get("reasoning"),
                         "max_context": m.get("max_context_length"),
                         "type": m.get("type"),
+                        "publisher": m.get("publisher"),
+                        "architecture": m.get("architecture"),
+                        "format": m.get("format"),
+                        "params_string": m.get("params_string"),
+                        "display_name": m.get("display_name"),
+                        "quantization": m.get("quantization"),
+                        "size_bytes": m.get("size_bytes"),
+                        "variants": m.get("variants"),
+                        "selected_variant": m.get("selected_variant"),
                         "raw_capabilities": caps,
                     }
             last_err = f"{base}: key not listed"
@@ -117,13 +160,17 @@ def probe_lmstudio_v0(model_key, bases=None, api_token=None, timeout=5):
                 mid = m.get("id", "")
                 if mid == model_key or model_key in mid or _norm_key(mid) == _norm_key(model_key):
                     mtype = m.get("type")
+                    caps = m.get("capabilities") or {}
+                    if not isinstance(caps, dict):
+                        caps = {}
                     return {
                         "ok": True,
                         "source": f"{base}/api/v0/models",
                         "vision": True if mtype == "vlm" else (False if mtype == "llm" else None),
+                        "reasoning": caps.get("reasoning"),
                         "type": mtype,
                         "max_context": m.get("max_context_length"),
-                        "capabilities": m.get("capabilities"),
+                        "capabilities": caps,
                     }
             last_err = f"{base}: key not listed"
         except Exception as e:
@@ -170,6 +217,12 @@ def probe_all(model_key, bases=None, api_token=None, timeout=5):
         if leg.get("ok") and isinstance(leg.get("tool_use"), bool):
             tool_use = leg["tool_use"]
             break
+    reasoning = None
+    for name in ("lmstudio_sdk", "lmstudio_api_v1", "lmstudio_api_v0"):
+        leg = legs[name]
+        if leg.get("ok") and leg.get("reasoning") is not None:
+            reasoning = leg["reasoning"]
+            break
     max_context = None
     for name in ("lmstudio_sdk", "lmstudio_api_v1", "lmstudio_api_v0"):
         leg = legs[name]
@@ -180,6 +233,43 @@ def probe_all(model_key, bases=None, api_token=None, timeout=5):
         "vision": vision,
         "vision_source": vision_source,
         "tool_use": tool_use,
+        "reasoning": reasoning,
         "max_context": max_context,
     }
     return legs
+
+
+def _norm_reasoning(value):
+    """Normalize a capabilities ``reasoning`` value to camelCase fields."""
+    if isinstance(value, dict):
+        out = {}
+        if value.get("allowed_options"):
+            out["allowedOptions"] = value["allowed_options"]
+        if value.get("default") is not None:
+            out["default"] = value["default"]
+        return out if out else True
+    return value
+
+
+def available_parameters(probe):
+    """Extract every available parameter field a probed model reports.
+
+    Walks the legs richest-first (native v1, SDK, v0) and merges each field
+    once, so the first leg that reports a value wins and later legs only fill
+    gaps. Fields the model reports as ``None`` are dropped; a model that
+    supports reasoning yields ``reasoning`` as ``{"allowedOptions": [...],
+    "default": "..."}`` (or a plain bool). Returns ``None`` when no leg
+    probed anything.
+    """
+    params = {}
+    for name in ("lmstudio_api_v1", "lmstudio_sdk", "lmstudio_api_v0"):
+        leg = (probe or {}).get(name) or {}
+        if not leg.get("ok"):
+            continue
+        for leg_key, cfg_key in _PARAM_KEYS:
+            if leg_key in leg and leg.get(leg_key) is not None:
+                value = leg[leg_key]
+                if leg_key == "reasoning":
+                    value = _norm_reasoning(value)
+                params.setdefault(cfg_key, value)
+    return params or None

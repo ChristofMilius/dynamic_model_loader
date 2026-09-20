@@ -1,24 +1,18 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
-
-# uv
-.venv/
-
-# Runtime artifacts
-dynamic_loader.log
-
-# Local config (personal model presets); use model_configs.example.json instead
+# Whitelist-first: ignore everything by default, un-ignore exactly what is versioned.
+*
+!.gitignore
+!.opencode/
+!.opencode/**
+!.python-version
+!LICENSE
+!README.md
+!pyproject.toml
+!uv.lock
+!loader/
+!loader/**
+!tests/
+!tests/**
+# Re-ignore runtime artifacts that live inside whitelisted dirs
+**/__pycache__/
 loader/model_configs.json
-
-# IDE
-.idea/
-.vscode/
-
-# Windows shortcuts
-*.lnk
-
-
+dynamic_loader.log

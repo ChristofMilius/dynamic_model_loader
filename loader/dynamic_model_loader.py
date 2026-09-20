@@ -110,6 +110,13 @@ def _sync_wsl_target(target, watched, overrides, keep):
         return 0, [], [], str(e)
 
 
+def _reasoning_label(value):
+    """Short human-readable form of a capabilit's ``reasoning`` value."""
+    if isinstance(value, dict) and value.get("allowed_options"):
+        return "|".join(value["allowed_options"])
+    return str(value)
+
+
 class Menu:
     """Renders a numbered choice list and reads a valid selection."""
 
@@ -385,6 +392,7 @@ class DynamicModelLoader:
         for k, v in config.items():
             print(f"  {k}: {v}")
         # Probe every API exposure for capabilities (LMS native -> OpenAI)
+        probe = {}
         try:
             from loader.capabilities import probe_all
 
@@ -399,6 +407,8 @@ class DynamicModelLoader:
                         details.append(f"vision={entry['vision']}")
                     if "tool_use" in entry and entry["tool_use"] is not None:
                         details.append(f"tool_use={entry['tool_use']}")
+                    if entry.get("reasoning"):
+                        details.append(f"reasoning={_reasoning_label(entry['reasoning'])}")
                     if entry.get("type"):
                         details.append(f"type={entry['type']}")
                     if entry.get("exposed"):
@@ -413,10 +423,17 @@ class DynamicModelLoader:
                 print(f"  merged vision={vision} via {merged.get('vision_source')}")
             else:
                 print("  merged vision=unknown (no chatty endpoint)")
+            r = merged.get("reasoning")
+            if r:
+                if isinstance(r, dict) and r.get("allowed_options"):
+                    print(f"  merged reasoning options={r['allowed_options']} (default {r.get('default')!r})")
+                else:
+                    print(f"  merged reasoning={r}")
             probe_vision = vision
             probe_source = merged.get("vision_source")
         except Exception as e:
             print(f"  capability probe failed: {type(e).__name__}: {e}")
+            probe = {}
             probe_vision = None
             probe_source = None
         name = self._prompt("Preset name", "imported")
@@ -434,7 +451,7 @@ class DynamicModelLoader:
             if watched and watched != name:
                 print(f"Model {model_key} is currently watched as {watched!r}; "
                       f"{name!r} will replace it as the watched preset.")
-        self.config_store.add_preset(model_key, name, config, watch=watch)
+        self.config_store.add_preset(model_key, name, self._augment_config(config, probe), watch=watch)
         state = f"{model_key}  [{name}, ctx={config.get('contextLength') or 'default'}]"
         print(f"Saved: {state}")
         print(f"  -> {self.config_store.path}")
@@ -607,7 +624,7 @@ class DynamicModelLoader:
 
     def cmd_capabilities(self, args):
         """Probe capabilities across LMS native and OpenAI compat."""
-        from loader.capabilities import probe_all
+        from loader.capabilities import available_parameters, probe_all
 
         target = " ".join(args).strip() if args else ""
         if not target:
@@ -639,6 +656,8 @@ class DynamicModelLoader:
                     details.append(f"vision={entry['vision']}")
                 if "tool_use" in entry and entry["tool_use"] is not None:
                     details.append(f"tool_use={entry['tool_use']}")
+                if entry.get("reasoning"):
+                    details.append(f"reasoning={_reasoning_label(entry['reasoning'])}")
                 if entry.get("type"):
                     details.append(f"type={entry['type']}")
                 if entry.get("exposed"):
@@ -650,7 +669,14 @@ class DynamicModelLoader:
             else:
                 print(f"  {tag}: {entry.get('error','no data')}")
         m = probe.get("merged", {})
-        print(f"merged: vision={m.get('vision')} (via {m.get('vision_source')}), tool_use={m.get('tool_use')}, max_context={m.get('max_context')}")
+        print(f"merged: vision={m.get('vision')} (via {m.get('vision_source')}), tool_use={m.get('tool_use')}, max_context={m.get('max_context')}, reasoning={_reasoning_label(m['reasoning']) if m.get('reasoning') else None}")
+        params = available_parameters(probe)
+        if params:
+            print("available parameters:")
+            for k, v in sorted(params.items()):
+                print(f"  {k}: {v}")
+        else:
+            print("available parameters: none (probe found no model data)")
         if isinstance(m.get("vision"), bool):
             resp = self._prompt(f"Store opencode vision={m['vision']} for {target}", "n").lower() in ("y", "yes")
             if resp:
@@ -687,6 +713,30 @@ class DynamicModelLoader:
             print()
             return ""
         return raw or default
+
+    @staticmethod
+    def _augment_config(config, probe):
+        """Merge every probed parameter field into a load config.
+
+        The actual running config wins over probed metadata on overlap. When
+        the probe shows the model supports reasoning, a ``reasoningEffort``
+        default (``medium``) is added unless the preset already picks one.
+        """
+        try:
+            from loader.capabilities import DEFAULT_REASONING_EFFORT, available_parameters
+
+            params = available_parameters(probe)
+        except Exception:
+            params = None
+        if not params:
+            return config
+        aug = {**params, **config}
+        if params.get("reasoning"):
+            aug.setdefault("reasoningEffort", DEFAULT_REASONING_EFFORT)
+            print(f"  -> saved {len(params)} probe parameter fields, reasoningEffort={aug['reasoningEffort']!r}")
+        else:
+            print(f"  -> saved {len(params)} probe parameter fields (model has no reasoning support)")
+        return aug
 
     def run(self):
         print("dynamic model loader")

@@ -17,7 +17,8 @@
           "contextLength": 65536,
           "flashAttention": true,
           "llamaKCacheQuantizationType": "q8_0",
-          "llamaVCacheQuantizationType": "q8_0"
+          "llamaVCacheQuantizationType": "q8_0",
+          "reasoningEffort": "medium"
         }
       }
     }
